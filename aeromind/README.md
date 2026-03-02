@@ -13,7 +13,7 @@ All gesture recognition and decision-making are performed offboard on a laptop. 
 ## Project Structure
 
 aeromind/
-│── src/                # System source code
+│── python-core/                # System source code
 │   ├── main.py
 │   ├── camera.py
 │   ├── gesture_model.py
@@ -37,6 +37,8 @@ aeromind/
 │   └── processed/    # cleaned tables for graphs
 │── notebooks/
 │   └── analysis.ipynb  # Data analysis and plots
+│── java-ui/
+│   ├── /
 │── requirements.txt
 │── README.md
 
@@ -51,7 +53,7 @@ aeromind/
 2. Install dependencies:
    pip install -r requirements.txt
 3. Run the system:
-   python src/main.py
+   python python-core/main.py
 
 By default, the system runs in simulation mode (no real drone required).
 

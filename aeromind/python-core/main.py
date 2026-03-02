@@ -30,7 +30,7 @@ from logger import Logger
 from gui import GUI
 import config
 
-
+from ui_bridge_server import UiBridgeServer
 # =========================
 # CSV LOGGER SCHEMA
 # =========================
@@ -92,7 +92,8 @@ def main():
     drone = DroneInterface(enabled=use_drone)
     sim = Simulator()
     gui = GUI()
-
+    ui = UiBridgeServer()
+    ui.start()
     # =========================
     # DRONE CONNECTION
     # =========================
@@ -125,6 +126,14 @@ def main():
         # MAIN LOOP
         # =========================
         while gui.running:
+            # ---- UI COMMANDS FROM JAVA ----
+            for msg in ui.poll():
+                if msg.get("type") == "CMD" and drone.enabled:
+                    cmd = msg.get("cmd", "")
+                    if cmd == "emergency":
+                        drone.send_command("emergency")
+                    elif cmd in ("takeoff", "land"):
+                        drone.send_command(cmd)
             ts = now_ms()
 
             # ---- CAMERA ----
@@ -229,7 +238,23 @@ def main():
 
             # keyboard handling (quit / labeling)
             gui.handle_keys()
+            # ---- TELEMETRY TO JAVA UI ----
+            # ---- TELEMETRY TO JAVA UI ----
+            state = drone.poll_state()
 
+            ui.send({
+                "type": "telemetry",
+                "ts_ms": ts,
+                "pred_gesture": pred.gesture,
+                "confidence": pred.confidence,
+                "stable_ms": cand.stable_ms,
+                "candidate_cmd": cand.command,
+                "decision_allowed": decision.allowed,
+                "block_reason": decision.reason,
+                "battery_pct": state.get("battery_pct") if state else None,
+                "height_cm": state.get("height_cm") if state else None,
+                "mode": "drone" if drone.enabled else "sim",
+            })
             frame_id += 1
 
     finally:
@@ -240,7 +265,7 @@ def main():
         cam.release()
         gui.close()
         drone.close()   # <-- ADD THIS
-
+        ui.stop()
         logger.close()
 
 

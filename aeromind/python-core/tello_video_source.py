@@ -35,19 +35,48 @@ class TelloVideoSource:
             print("[Video] streamon failed")
             return False
 
-        self.cap = cv2.VideoCapture("udp://0.0.0.0:11111", cv2.CAP_FFMPEG)
+        def open_cap():
+            cap = cv2.VideoCapture("udp://0.0.0.0:11111", cv2.CAP_FFMPEG)
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # may or may not be supported
+            except:
+                pass
+            return cap
+
+        self.cap = open_cap()
         time.sleep(self.warmup_s)
 
-        # quick sanity check read a few frames
-        for _ in range(20):
+        # flush until we get a real frame
+        ok_frame = False
+        for _ in range(120):  # ~6s at 20Hz polling
             ok, frame = self.cap.read()
-            if ok and frame is not None:
-                self._started = True
-                print("[Video] Tello stream ready")
-                return True
+            if ok and frame is not None and frame.size > 0:
+                ok_frame = True
+                break
             time.sleep(0.05)
 
-        print("[Video] No frames from Tello stream")
+        # if still bad, reopen ONCE (often fixes PPS spam)
+        if not ok_frame:
+            try:
+                self.cap.release()
+            except:
+                pass
+            self.cap = open_cap()
+            time.sleep(0.5)
+
+            for _ in range(120):
+                ok, frame = self.cap.read()
+                if ok and frame is not None and frame.size > 0:
+                    ok_frame = True
+                    break
+                time.sleep(0.05)
+
+        if ok_frame:
+            self._started = True
+            print("[Video] Tello stream ready")
+            return True
+
+        print("[Video] No decodable frames from Tello stream")
         return False
 
     def read(self):

@@ -110,6 +110,7 @@ class DroneInterface:
             try: self.cmd_sock.close()
             except: pass
             self.cmd_sock = None
+    
     # ---------------------------
     # Internals
     # ---------------------------
