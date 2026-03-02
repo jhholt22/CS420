@@ -12,12 +12,13 @@ class TelloVideoSource:
       video.release()
     """
 
-    def __init__(self, drone_interface, *, warmup_s: float = 0.8):
+    def __init__(self, drone_interface, *, warmup_s: float = 0.8, stall_ms: int = 1200):
         self.drone = drone_interface
         self.warmup_s = warmup_s
         self.cap = None
         self._started = False
-
+        self._last_ok_ts = 0
+        self._stall_ms = stall_ms
     def start(self) -> bool:
         if self._started:
             return True
@@ -82,8 +83,46 @@ class TelloVideoSource:
     def read(self):
         if not self.cap:
             return False, None
-        return self.cap.read()
 
+        ok, frame = self.cap.read()
+        now = int(time.time() * 1000)
+
+        if ok and frame is not None and frame.size > 0:
+            self._last_ok_ts = now
+            return True, frame
+
+        # detect stall
+        if now - self._last_ok_ts > self._stall_ms:
+            print("[Video] Stall detected -> restarting stream")
+            self._restart()
+
+        return False, None
+    def _restart(self):
+        try:
+            if self.cap:
+                self.cap.release()
+        except:
+            pass
+
+        self.cap = None
+
+        # reset tello stream
+        try:
+            self.drone.send_command("streamoff")
+        except:
+            pass
+
+        time.sleep(0.2)
+
+        try:
+            self.drone.send_command("streamon")
+        except:
+            pass
+
+        time.sleep(0.3)
+
+        self.cap = cv2.VideoCapture("udp://0.0.0.0:11111", cv2.CAP_FFMPEG)
+        self._last_ok_ts = int(time.time() * 1000)
     def release(self):
         if self.cap:
             try:

@@ -18,7 +18,8 @@ public class PythonBridgeClient {
         this.port = port;
     }
 
-    public void connect() throws Exception {
+    public synchronized void connect() throws Exception {
+        close();
         socket = new Socket(host, port);
         out = new PrintWriter(
                 new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8),
@@ -26,15 +27,32 @@ public class PythonBridgeClient {
         );
     }
 
-    public void sendJsonLine(String json) {
-        if (out == null) {
-            System.out.println("[UI] Not connected to Python");
-            return;
-        }
-        out.println(json);
+    public synchronized boolean isConnected() {
+        return socket != null && socket.isConnected() && !socket.isClosed();
     }
 
-    public void close() {
+    public synchronized void ensureConnected() {
+        if (isConnected()) return;
+        try {
+            System.out.println("[UI] Reconnecting to Python...");
+            connect();
+            System.out.println("[UI] Reconnected to Python");
+        } catch (Exception e) {
+            System.out.println("[UI] Reconnect failed: " + e.getMessage());
+        }
+    }
+
+    public void sendJsonLine(String json) {
+        synchronized (this) {
+            if (!isConnected() || out == null) {
+                System.out.println("[UI] Not connected to Python");
+                return;
+            }
+            out.println(json);
+        }
+    }
+
+    public synchronized void close() {
         try {
             if (socket != null) socket.close();
         } catch (Exception ignored) {}

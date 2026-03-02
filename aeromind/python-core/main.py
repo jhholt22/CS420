@@ -93,6 +93,9 @@ def main():
     sim = Simulator()
     gui = GUI()
     ui = UiBridgeServer()
+    from mjpeg_server import MjpegServer
+    mjpeg = MjpegServer(port=8080, fps=12, jpeg_quality=80)
+    mjpeg.start()
     ui.start()
     # =========================
     # DRONE CONNECTION
@@ -128,8 +131,20 @@ def main():
         while gui.running:
             # ---- UI COMMANDS FROM JAVA ----
             for msg in ui.poll():
-                if msg.get("type") == "CMD" and drone.enabled:
+                if msg.get("type") == "CMD":
                     cmd = msg.get("cmd", "")
+
+                    if cmd == "recover":
+                        drone.send_command("recover")
+                        # IMPORTANT: restart your video capture too (see below)
+                        if hasattr(cam, "start"):
+                            cam.release()
+                            cam.start()
+                        continue
+
+                    if not drone.enabled:
+                        continue
+
                     if cmd == "emergency":
                         drone.send_command("emergency")
                     elif cmd in ("takeoff", "land"):
@@ -140,7 +155,7 @@ def main():
             ok, frame = cam.read()
             if not ok or frame is None:
                 continue
-
+            mjpeg.update(frame)
             # ---- GESTURE PREDICTION ----
             pred = model.predict(frame)
 
@@ -266,8 +281,9 @@ def main():
         gui.close()
         drone.close()   # <-- ADD THIS
         ui.stop()
-        logger.close()
+        mjpeg.stop()
 
+        logger.close()
 
 # =========================
 # ENTRY POINT

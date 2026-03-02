@@ -18,7 +18,7 @@ class DroneInterface:
         self.enabled = enabled
         self.local_cmd_port = local_cmd_port
         self.cmd_timeout = cmd_timeout
-
+        self.is_flying = False
         self.cmd_sock: socket.socket | None = None
         self.state_sock: socket.socket | None = None
 
@@ -74,14 +74,56 @@ class DroneInterface:
         if not self.enabled:
             return True
 
-        try:
-            # serialize commands so responses don't get mixed
-            self._send_cmd(cmd, expect_ok=True, retries=2)
+        # local gating
+        if cmd == "takeoff" and self.is_flying:
+            print("[Drone] Ignored takeoff (already flying)")
             return True
+        if cmd == "land" and not self.is_flying:
+            print("[Drone] Ignored land (not flying)")
+            return True
+
+        try:
+            # special recover sequence
+            if cmd == "recover":
+                print("[Drone] Recover: emergency -> command -> streamon")
+                # kill motors (if needed)
+                try:
+                    self._send_cmd("emergency", expect_ok=True, retries=1)
+                except Exception as e:
+                    print(f"[Drone] Recover emergency failed: {e}")
+
+                time.sleep(1.0)
+
+                # re-enter sdk mode
+                self._send_cmd("command", expect_ok=True, retries=5)
+
+                # restart video stream
+                try:
+                    self._send_cmd("streamoff", expect_ok=False, retries=1)
+                except:
+                    pass
+                try:
+                    self._send_cmd("streamon", expect_ok=True, retries=3)
+                except Exception as e:
+                    print(f"[Drone] Recover streamon failed: {e}")
+
+                self.is_flying = False
+                return True
+
+            # normal command
+            self._send_cmd(cmd, expect_ok=True, retries=2)
+
+            # update local state if command succeeded
+            if cmd == "takeoff":
+                self.is_flying = True
+            elif cmd in ("land", "emergency"):
+                self.is_flying = False
+
+            return True
+
         except Exception as e:
             print(f"[Drone] Command failed ({cmd}): {e}")
             return False
-
     def poll_state(self):
         return self.state
 
@@ -90,7 +132,7 @@ class DroneInterface:
         if self.enabled and self.cmd_sock:
             try:
                 # dont retry much on shutdown
-                self._send_cmd("streamoff", expect_ok=True, retries=1)
+                self._send_cmd("streamoff", expect_ok=False, retries=1)
             except:
                 pass
 
@@ -143,6 +185,13 @@ class DroneInterface:
                     self.state["height_cm"] = int(v)
                 except:
                     pass
+            elif k == "h":
+                try:
+                    self.state["height_cm"] = int(v)
+                    if self.state["height_cm"] <= 5:
+                        self.is_flying = False
+                except:
+                    pass
 
     def _send_cmd(self, cmd: str, *, expect_ok: bool, retries: int = 1) -> str:
         if not self.cmd_sock:
@@ -158,7 +207,7 @@ class DroneInterface:
                     data, _ = self.cmd_sock.recvfrom(1024)
                     resp = data.decode("utf-8", errors="ignore").strip()
 
-                    if resp.lower() == "error":
+                    if resp.lower() == "error" and expect_ok:
                         raise RuntimeError("Tello returned error")
 
                     if expect_ok and resp.lower() != "ok":
