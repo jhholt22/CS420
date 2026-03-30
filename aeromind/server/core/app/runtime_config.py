@@ -8,6 +8,8 @@ from datetime import datetime
 class RuntimeConfig:
     run_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S"))
 
+    enable_server_gesture_pipeline: bool = False
+
     conf_threshold: float = 0.80
     stable_window_ms: int = 400
     command_cooldown_ms: int = 900

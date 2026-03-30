@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any
@@ -40,15 +41,16 @@ class AppController:
     def __init__(self, use_drone: bool, cfg: RuntimeConfig):
         self.cfg = cfg
         self.use_drone = use_drone
+        self.server_gesture_enabled = cfg.enable_server_gesture_pipeline
 
         self.logger = Logger(f"data/logs/run_{cfg.run_id}.csv", CSV_HEADER)
-        self.model = GestureModel()
-        self.mapper = GestureMapper()
+        self.model = GestureModel() if self.server_gesture_enabled else None
+        self.mapper = GestureMapper() if self.server_gesture_enabled else None
         self.safety = SafetyLayer(
             cfg.conf_threshold,
             cfg.stable_window_ms,
             cfg.command_cooldown_ms,
-        )
+        ) if self.server_gesture_enabled else None
         self.sim = Simulator()
 
         self.drone = DroneInterface(
@@ -87,6 +89,7 @@ class AppController:
         self._queued_count = 0
         self._executed_ok = 0
         self._executed_err = 0
+        self._video_unavailable_logged = False
 
     def start(self) -> None:
         log("[APP]", "Starting", run_id=self.cfg.run_id, mode="drone" if self.use_drone else "sim")
@@ -95,10 +98,9 @@ class AppController:
 
         ok = self.drone.connect()
         if self.use_drone and not ok:
-            log("[APP]", "Drone connect failed, fallback to SIM")
-            self.drone.enabled = False
+            log("[APP]", "Drone connect failed; staying in DRONE mode", fallback="disabled")
 
-        if self.use_drone and self.drone.enabled:
+        if self.use_drone:
             self.camera = TelloVideoSource(
                 self.drone,
                 video_url=self.cfg.tello_video_url,
@@ -106,12 +108,13 @@ class AppController:
                 watchdog_s=self.cfg.video_watchdog_s,
                 stall_reads=self.cfg.video_stall_reads,
             )
-            if not self.camera.start():
-                log("[VIDEO]", "Tello stream init failed, fallback webcam")
-                self.camera.release()
-                self.camera = Camera()
+            if self.camera.start():
+                log("[VIDEO]", "Using Tello video stream", url=self.cfg.tello_video_url)
+            else:
+                log("[VIDEO]", "Tello video stream FAILED", url=self.cfg.tello_video_url, fallback="disabled")
         else:
             self.camera = Camera()
+            log("[VIDEO]", "Using local camera stream")
 
         self._cmd_running = True
         self._cmd_thread = threading.Thread(
@@ -153,27 +156,44 @@ class AppController:
                 ok, frame = self.camera.read()
 
                 if ok and frame is not None:
+                    if self._video_unavailable_logged:
+                        log("[VIDEO]", "Frames resumed", source="tello" if self.use_drone else "camera")
+                        self._video_unavailable_logged = False
                     self.frame_bus.publish(frame)
 
-                    pred = self.model.predict(frame)
-                    cand = self.mapper.update(now_ms, pred.gesture)
-                    decision = self.safety.decide(
-                        ts_ms=now_ms,
-                        gesture=pred.gesture,
-                        confidence=pred.confidence,
-                        stable_ms=cand.stable_ms,
-                        command=cand.command,
-                    )
+                    if self.server_gesture_enabled:
+                        assert self.model is not None
+                        assert self.mapper is not None
+                        assert self.safety is not None
 
-                    self._last_pred = pred
-                    self._last_cand = cand
-                    self._last_decision = decision
+                        pred = self.model.predict(frame)
+                        cand = self.mapper.update(now_ms, pred.gesture)
+                        decision = self.safety.decide(
+                            ts_ms=now_ms,
+                            gesture=pred.gesture,
+                            confidence=pred.confidence,
+                            stable_ms=cand.stable_ms,
+                            command=cand.command,
+                        )
 
-                    if decision.allowed and decision.command != "none":
-                        self._enqueue_command(decision.command, source="gesture")
+                        self._last_pred = pred
+                        self._last_cand = cand
+                        self._last_decision = decision
 
-                    self._log_frame(now_ms, pred, cand, decision)
+                        if decision.allowed and decision.command != "none":
+                            self._enqueue_command(decision.command, source="gesture")
+
+                        self._log_frame(now_ms, pred, cand, decision)
                     self._frame_id += 1
+                else:
+                    if not self._video_unavailable_logged:
+                        log(
+                            "[VIDEO]",
+                            "No frames available from active source",
+                            source="tello" if self.use_drone else "camera",
+                        )
+                        self._video_unavailable_logged = True
+                    time.sleep(0.05)
 
         finally:
             self.stop()

@@ -24,10 +24,12 @@ class TelloVideoSource:
 
         self.cap: cv2.VideoCapture | None = None
         self._failed_reads = 0
+        self._logged_first_frame = False
 
     def start(self) -> bool:
         try:
             if self.drone.enabled:
+                log("[VIDEO]", "Requesting Tello stream", url=self.video_url)
                 self.drone.send_command("streamon")
 
             self.release()
@@ -36,6 +38,7 @@ class TelloVideoSource:
                 log("[VIDEO]", "Failed to open Tello video stream", url=self.video_url)
                 return False
 
+            self._logged_first_frame = False
             log("[VIDEO]", "Tello video stream started", url=self.video_url)
             return True
         except Exception as exc:
@@ -49,12 +52,17 @@ class TelloVideoSource:
         ok, frame = self.cap.read()
         if not ok or frame is None:
             self._failed_reads += 1
+            if self._failed_reads == 1:
+                log("[VIDEO]", "Tello video frame read failed", url=self.video_url)
             if self._failed_reads >= self.stall_reads:
                 log("[VIDEO]", "Stalled stream detected", failed_reads=self._failed_reads)
                 self.restart_stream()
             return False, None
 
         self._failed_reads = 0
+        if not self._logged_first_frame:
+            self._logged_first_frame = True
+            log("[VIDEO]", "Tello video frames received", url=self.video_url)
         return True, frame
 
     def restart_stream(self) -> bool:
@@ -66,3 +74,4 @@ class TelloVideoSource:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self._logged_first_frame = False

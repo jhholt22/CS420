@@ -3,7 +3,11 @@ from __future__ import annotations
 from flask import Flask, redirect, request
 from flask_restx import Namespace, Resource
 
-from server.api.command_registry import get_command_registry
+from server.api.command_registry import (
+    build_runtime_command,
+    get_command_registry,
+    normalize_command_payload,
+)
 from server.api.controller_service import ControllerService
 from server.api.extensions import create_api_blueprint
 from server.api.schemas.models import register_models
@@ -109,16 +113,26 @@ def create_app(service: ControllerService | None = None) -> Flask:
     app.register_blueprint(api_blueprint)
     @controller_ns.route("/command")
     class CommandResource(Resource):
+        @controller_ns.expect(models["command_request"], validate=False)
+        @controller_ns.marshal_with(models["command_response"], code=200)
+        @controller_ns.response(400, "Invalid request", models["error_response"])
+        @controller_ns.response(409, "Controller is not running", models["error_response"])
         def post(self):
             payload = request.get_json(silent=True) or {}
-
-            cmd = payload.get("command")
-            if not cmd:
-                controller_ns.abort(400, "Missing command")
+            try:
+                normalized = normalize_command_payload(payload)
+            except ValueError as exc:
+                controller_ns.abort(400, str(exc))
 
             try:
-                controller_service._get_running_controller().submit_command(cmd)
-                return {"ok": True, "command": cmd}
+                raw_command = build_runtime_command(normalized["command"], normalized["args"])
+                controller_service._get_running_controller().submit_command(raw_command)
+                return {
+                    "ok": True,
+                    "command": normalized["command"],
+                    "args": normalized["args"],
+                    "raw_command": raw_command,
+                }
             except RuntimeError as exc:
                 controller_ns.abort(409, str(exc))
     @app.get("/swagger")

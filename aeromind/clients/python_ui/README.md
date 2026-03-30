@@ -8,8 +8,8 @@ Client application for controlling AeroMind.
 
 - Displays server state
 - Sends control commands
-- Connects to video stream
-- Ready for gesture integration
+- Connects to MJPEG video stream
+- Runs client-side gesture detection on live frames
 
 ---
 
@@ -32,9 +32,9 @@ VIDEO_URL = "http://127.0.0.1:8080/video"
 
 ---
 
-## Gesture (Planned)
+## Gesture
 
-Gesture inference runs here:
+Gesture inference runs in the client:
 
 ```text
 video → inference → command → API
@@ -45,8 +45,8 @@ video → inference → command → API
 ## Controls
 
 - Buttons (UI)
-- Keyboard (planned)
-- Gesture (planned)
+- Keyboard
+- Gesture
 
 ---
 

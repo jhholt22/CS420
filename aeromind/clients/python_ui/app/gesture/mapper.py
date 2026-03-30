@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)
 class CommandSpec:
     command: str
     label: str
+    args: Dict[str, Any] = field(default_factory=dict)
+
+    def to_payload(self) -> dict:
+        return {
+            "command": self.command,
+            "args": dict(self.args),
+        }
 
 
 class GestureCommandMapper:
@@ -21,14 +28,14 @@ class GestureCommandMapper:
     DEFAULT_MAP: Dict[str, CommandSpec] = {
         "PALM": CommandSpec(command="takeoff", label="Takeoff"),
         "FIST": CommandSpec(command="land", label="Land"),
-        "THUMB_UP": CommandSpec(command="up 30", label="Up"),
-        "THUMB_DOWN": CommandSpec(command="down 30", label="Down"),
-        "POINT_LEFT": CommandSpec(command="left 30", label="Left"),
-        "POINT_RIGHT": CommandSpec(command="right 30", label="Right"),
-        "FORWARD": CommandSpec(command="forward 30", label="Forward"),
-        "BACKWARD": CommandSpec(command="back 30", label="Back"),
-        "ROTATE_LEFT": CommandSpec(command="ccw 45", label="Rotate Left"),
-        "ROTATE_RIGHT": CommandSpec(command="cw 45", label="Rotate Right"),
+        "THUMB_UP": CommandSpec(command="up", label="Up", args={"distance_cm": 30}),
+        "THUMB_DOWN": CommandSpec(command="down", label="Down", args={"distance_cm": 30}),
+        "POINT_LEFT": CommandSpec(command="", label="Left Disabled"),
+        "POINT_RIGHT": CommandSpec(command="", label="Right Disabled"),
+        "FORWARD": CommandSpec(command="forward", label="Forward", args={"distance_cm": 30}),
+        "BACKWARD": CommandSpec(command="back", label="Back", args={"distance_cm": 30}),
+        "ROTATE_LEFT": CommandSpec(command="ccw", label="Rotate Left", args={"degrees": 45}),
+        "ROTATE_RIGHT": CommandSpec(command="cw", label="Rotate Right", args={"degrees": 45}),
         "STOP": CommandSpec(command="stop", label="Stop"),
         "NONE": CommandSpec(command="", label="No Action"),
     }

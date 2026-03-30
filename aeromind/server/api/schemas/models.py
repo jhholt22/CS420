@@ -4,6 +4,32 @@ from flask_restx import fields
 
 
 def register_models(api):
+    command_request = api.model(
+        "CommandRequest",
+        {
+            "command": fields.String(
+                required=True,
+                description="Command name. Legacy raw strings like 'forward 50' are still accepted.",
+                example="forward",
+            ),
+            "args": fields.Raw(
+                required=False,
+                description="Structured command arguments keyed by argument name.",
+                example={"distance_cm": 50},
+            ),
+        },
+    )
+
+    command_response = api.model(
+        "CommandResponse",
+        {
+            "ok": fields.Boolean(required=True, description="True when the command was accepted.", example=True),
+            "command": fields.String(required=True, description="Normalized command name.", example="forward"),
+            "args": fields.Raw(required=True, description="Normalized structured arguments.", example={"distance_cm": 50}),
+            "raw_command": fields.String(required=True, description="Internal raw command string sent to the controller.", example="forward 50"),
+        },
+    )
+
     start_request = api.model(
         "StartRequest",
         {
@@ -122,6 +148,8 @@ def register_models(api):
     )
 
     return {
+        "command_request": command_request,
+        "command_response": command_response,
         "start_request": start_request,
         "lifecycle_response": lifecycle_response,
         "state_response": state_response,

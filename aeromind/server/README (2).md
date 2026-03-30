@@ -45,5 +45,5 @@ http://127.0.0.1:8080/video
 
 ## Notes
 
-- Server does not handle gesture inference
+- Server streams frames and executes validated commands from the client
 - Server is stateless except controller lifecycle
