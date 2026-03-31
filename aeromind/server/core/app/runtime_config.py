@@ -32,6 +32,8 @@ class RuntimeConfig:
     tello_video_url: str = "udp://0.0.0.0:11111"
     local_cmd_port: int = 9000
     cmd_timeout_s: float = 2.5
+    motion_command_cooldown_ms: int = 900
+    motion_command_timeout_s: float = 1.0
 
     video_warmup_s: float = 0.8
     video_watchdog_s: float = 2.5

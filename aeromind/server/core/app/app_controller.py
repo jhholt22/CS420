@@ -60,6 +60,7 @@ class AppController:
             state_port=cfg.tello_state_port,
             local_cmd_port=cfg.local_cmd_port,
             cmd_timeout=cfg.cmd_timeout_s,
+            motion_cmd_timeout=cfg.motion_command_timeout_s,
         )
 
         self.frame_bus = FrameBus()
@@ -77,6 +78,7 @@ class AppController:
         self._cmd_queue: Queue[CommandTask] = Queue(maxsize=64)
         self._cmd_thread: threading.Thread | None = None
         self._cmd_running = False
+        self._cmd_meta_lock = threading.Lock()
         self._video_restart_lock = threading.Lock()
 
         self._frame_id = 0
@@ -90,6 +92,9 @@ class AppController:
         self._executed_ok = 0
         self._executed_err = 0
         self._video_unavailable_logged = False
+        self._last_executed_cmd: str | None = None
+        self._last_executed_ts_ms = 0
+        self._pending_motion_cmds: set[str] = set()
 
     def start(self) -> None:
         log("[APP]", "Starting", run_id=self.cfg.run_id, mode="drone" if self.use_drone else "sim")
@@ -240,10 +245,21 @@ class AppController:
         }
 
     def _enqueue_command(self, cmd: str, source: str) -> None:
+        is_motion = self.drone.enabled and self._is_motion_command(cmd)
+        if is_motion:
+            with self._cmd_meta_lock:
+                if cmd in self._pending_motion_cmds:
+                    log("[DRONE][CMD]", "Dropped pending duplicate", cmd=cmd, source=source, reason="pending_duplicate")
+                    return
+                self._pending_motion_cmds.add(cmd)
+
         try:
             self._cmd_queue.put_nowait(CommandTask(cmd=cmd, source=source, ts_ms=epoch_ms()))
             self._queued_count += 1
         except Exception:
+            if is_motion:
+                with self._cmd_meta_lock:
+                    self._pending_motion_cmds.discard(cmd)
             log("[DRONE][CMD]", "Command queue full, dropped", cmd=cmd, source=source)
 
     def _command_worker(self) -> None:
@@ -255,8 +271,18 @@ class AppController:
 
             cmd = task.cmd
             ok = True
+            executed = False
 
             if self.drone.enabled:
+                drop_reason = self._drop_reason_for_command(cmd)
+                if drop_reason is not None:
+                    self._release_pending_command(cmd)
+                    log("[DRONE][CMD]", "Dropped before execute", cmd=cmd, source=task.source, reason=drop_reason)
+                    self._cmd_queue.task_done()
+                    continue
+
+                self._mark_command_executing(cmd)
+
                 if cmd == "recover":
                     ok = self.drone.recover()
                     self._restart_video_blocking("recover")
@@ -264,6 +290,7 @@ class AppController:
                     ok = self.drone.send_command(cmd)
                     if cmd in ("land", "emergency"):
                         self._restart_video_blocking(cmd)
+                executed = True
 
             if ok:
                 self._executed_ok += 1
@@ -273,7 +300,10 @@ class AppController:
             if ok or not self.drone.enabled:
                 self.sim.apply(cmd)
 
-            log("[DRONE][CMD]", "Executed", cmd=cmd, source=task.source, ok=ok)
+            self._release_pending_command(cmd)
+            self._cmd_queue.task_done()
+
+            log("[DRONE][CMD]", "Executed", cmd=cmd, source=task.source, ok=ok, executed=executed)
 
     def _restart_video_blocking(self, reason: str) -> None:
         if not self.camera or not hasattr(self.camera, "restart_stream"):
@@ -318,3 +348,33 @@ class AppController:
     def _handle_diag_command(self) -> None:
         diag = self.collect_diag()
         log("[API]", "diag requested", **diag)
+
+    def _drop_reason_for_command(self, cmd: str) -> str | None:
+        if not self._is_motion_command(cmd):
+            return None
+
+        now_ms = epoch_ms()
+        elapsed_ms = now_ms - self._last_executed_ts_ms
+        if elapsed_ms >= self.cfg.motion_command_cooldown_ms:
+            return None
+
+        if cmd == self._last_executed_cmd:
+            return "duplicate_cooldown"
+        return "cooldown"
+
+    def _mark_command_executing(self, cmd: str) -> None:
+        if not self._is_motion_command(cmd):
+            return
+        self._last_executed_cmd = cmd
+        self._last_executed_ts_ms = epoch_ms()
+
+    def _release_pending_command(self, cmd: str) -> None:
+        if not self._is_motion_command(cmd):
+            return
+        with self._cmd_meta_lock:
+            self._pending_motion_cmds.discard(cmd)
+
+    @staticmethod
+    def _is_motion_command(cmd: str) -> bool:
+        base = cmd.strip().split(" ", 1)[0].lower()
+        return base in {"forward", "back", "left", "right", "up", "down", "cw", "ccw"}

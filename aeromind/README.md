@@ -7,6 +7,8 @@ AeroMind is a modular drone control system for DJI Tello (SDK 2.0) with a clean 
 
 The system is designed to be extensible, testable, and production-ready.
 
+
+disconnect the firewall
 ---
 
 ## Architecture

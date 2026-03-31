@@ -18,12 +18,14 @@ class DroneInterface:
         state_port: int,
         local_cmd_port: int,
         cmd_timeout: float,
+        motion_cmd_timeout: float,
     ):
         self.enabled = enabled
         self.tello_addr = (tello_ip, cmd_port)
         self.state_port = state_port
         self.local_cmd_port = local_cmd_port
         self.cmd_timeout = cmd_timeout
+        self.motion_cmd_timeout = motion_cmd_timeout
 
         self._cmd_sock: Optional[socket.socket] = None
         self._state_sock: Optional[socket.socket] = None
@@ -77,7 +79,7 @@ class DroneInterface:
         if not self.enabled:
             return True
 
-        ok = self._send_raw(cmd)
+        ok = self._send_raw(cmd, timeout=self._timeout_for_command(cmd))
 
         if ok:
             if cmd == "takeoff":
@@ -110,9 +112,12 @@ class DroneInterface:
             "connected": self.enabled,
         }
 
-    def _send_raw(self, cmd: str) -> bool:
+    def _send_raw(self, cmd: str, timeout: float | None = None) -> bool:
         try:
             assert self._cmd_sock is not None
+            original_timeout = self._cmd_sock.gettimeout()
+            if timeout is not None:
+                self._cmd_sock.settimeout(timeout)
             self._cmd_sock.sendto(cmd.encode("utf-8"), self.tello_addr)
             data, _ = self._cmd_sock.recvfrom(1024)
             response = data.decode("utf-8").strip()
@@ -120,6 +125,9 @@ class DroneInterface:
         except Exception as exc:
             log("[DRONE]", "Command failed", cmd=cmd, error=exc)
             return False
+        finally:
+            if self._cmd_sock is not None and timeout is not None:
+                self._cmd_sock.settimeout(original_timeout)
 
     def _state_loop(self) -> None:
         assert self._state_sock is not None
@@ -134,3 +142,11 @@ class DroneInterface:
                     self._last_state = parsed
             except Exception:
                 continue
+
+    def _timeout_for_command(self, cmd: str) -> float:
+        return self.motion_cmd_timeout if self._is_motion_command(cmd) else self.cmd_timeout
+
+    @staticmethod
+    def _is_motion_command(cmd: str) -> bool:
+        base = cmd.strip().split(" ", 1)[0].lower()
+        return base in {"forward", "back", "left", "right", "up", "down", "cw", "ccw"}
