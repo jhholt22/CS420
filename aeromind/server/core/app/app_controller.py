@@ -80,6 +80,7 @@ class AppController:
         self._cmd_running = False
         self._cmd_meta_lock = threading.Lock()
         self._video_restart_lock = threading.Lock()
+        self._latest_rc_task: CommandTask | None = None
 
         self._frame_id = 0
         self._participant_id = "P1"
@@ -245,6 +246,12 @@ class AppController:
         }
 
     def _enqueue_command(self, cmd: str, source: str) -> None:
+        if self._is_rc_command(cmd):
+            with self._cmd_meta_lock:
+                self._latest_rc_task = CommandTask(cmd=cmd, source=source, ts_ms=epoch_ms())
+            self._queued_count += 1
+            return
+
         is_motion = self.drone.enabled and self._is_motion_command(cmd)
         if is_motion:
             with self._cmd_meta_lock:
@@ -264,9 +271,8 @@ class AppController:
 
     def _command_worker(self) -> None:
         while self._cmd_running:
-            try:
-                task = self._cmd_queue.get(timeout=0.2)
-            except Empty:
+            task, from_queue = self._next_command_task()
+            if task is None:
                 continue
 
             cmd = task.cmd
@@ -278,7 +284,8 @@ class AppController:
                 if drop_reason is not None:
                     self._release_pending_command(cmd)
                     log("[DRONE][CMD]", "Dropped before execute", cmd=cmd, source=task.source, reason=drop_reason)
-                    self._cmd_queue.task_done()
+                    if from_queue:
+                        self._cmd_queue.task_done()
                     continue
 
                 self._mark_command_executing(cmd)
@@ -301,7 +308,8 @@ class AppController:
                 self.sim.apply(cmd)
 
             self._release_pending_command(cmd)
-            self._cmd_queue.task_done()
+            if from_queue:
+                self._cmd_queue.task_done()
 
             log("[DRONE][CMD]", "Executed", cmd=cmd, source=task.source, ok=ok, executed=executed)
 
@@ -378,3 +386,20 @@ class AppController:
     def _is_motion_command(cmd: str) -> bool:
         base = cmd.strip().split(" ", 1)[0].lower()
         return base in {"forward", "back", "left", "right", "up", "down", "cw", "ccw"}
+
+    @staticmethod
+    def _is_rc_command(cmd: str) -> bool:
+        return cmd.strip().split(" ", 1)[0].lower() == "rc"
+
+    def _next_command_task(self) -> tuple[CommandTask | None, bool]:
+        try:
+            return self._cmd_queue.get(timeout=0.05), True
+        except Empty:
+            pass
+
+        with self._cmd_meta_lock:
+            if self._latest_rc_task is None:
+                return None, False
+            task = self._latest_rc_task
+            self._latest_rc_task = None
+            return task, False

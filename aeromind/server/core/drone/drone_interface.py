@@ -149,4 +149,4 @@ class DroneInterface:
     @staticmethod
     def _is_motion_command(cmd: str) -> bool:
         base = cmd.strip().split(" ", 1)[0].lower()
-        return base in {"forward", "back", "left", "right", "up", "down", "cw", "ccw"}
+        return base in {"forward", "back", "left", "right", "up", "down", "cw", "ccw", "rc"}

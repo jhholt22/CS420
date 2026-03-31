@@ -5,6 +5,7 @@ class Simulator:
     def __init__(self):
         self.x = 0
         self.y = 0
+        self.z = 0
         self.yaw = 0
         self.flying = False
 
@@ -21,6 +22,17 @@ class Simulator:
             self.yaw -= 10
         elif cmd.startswith("cw") and self.flying:
             self.yaw += 10
+        elif cmd.startswith("rc ") and self.flying:
+            parts = cmd.split()
+            if len(parts) == 5:
+                left_right = int(parts[1])
+                forward_back = int(parts[2])
+                up_down = int(parts[3])
+                yaw = int(parts[4])
+                self.x += left_right
+                self.y += forward_back
+                self.z += up_down
+                self.yaw += yaw
         elif cmd == "emergency":
             self.flying = False
 
@@ -28,6 +40,7 @@ class Simulator:
         return {
             "x": self.x,
             "y": self.y,
+            "z": self.z,
             "yaw": self.yaw,
             "flying": self.flying,
         }

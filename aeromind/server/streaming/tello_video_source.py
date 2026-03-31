@@ -25,9 +25,11 @@ class TelloVideoSource:
         self.cap: cv2.VideoCapture | None = None
         self._failed_reads = 0
         self._logged_first_frame = False
+        self._stopping = False
 
     def start(self) -> bool:
         try:
+            self._stopping = False
             if self.drone.enabled:
                 log("[VIDEO]", "Requesting Tello stream", url=self.video_url)
                 self.drone.send_command("streamon")
@@ -46,15 +48,29 @@ class TelloVideoSource:
             return False
 
     def read(self) -> tuple[bool, Any]:
-        if self.cap is None:
+        cap = self.cap
+        if cap is None or self._stopping:
             return False, None
 
-        ok, frame = self.cap.read()
+        try:
+            ok, frame = cap.read()
+        except cv2.error as exc:
+            if not self._stopping:
+                log("[VIDEO]", "OpenCV read failed", url=self.video_url, error=exc)
+            return False, None
+        except Exception as exc:
+            if not self._stopping:
+                log("[VIDEO]", "Video read failed", url=self.video_url, error=exc)
+            return False, None
+
+        if self._stopping or self.cap is None:
+            return False, None
+
         if not ok or frame is None:
             self._failed_reads += 1
-            if self._failed_reads == 1:
+            if self._failed_reads == 1 and not self._stopping:
                 log("[VIDEO]", "Tello video frame read failed", url=self.video_url)
-            if self._failed_reads >= self.stall_reads:
+            if self._failed_reads >= self.stall_reads and not self._stopping:
                 log("[VIDEO]", "Stalled stream detected", failed_reads=self._failed_reads)
                 self.restart_stream()
             return False, None
@@ -66,12 +82,20 @@ class TelloVideoSource:
         return True, frame
 
     def restart_stream(self) -> bool:
+        if self._stopping:
+            return False
         log("[VIDEO]", "Restarting Tello video stream")
         self.release()
         return self.start()
 
     def release(self) -> None:
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+        self._stopping = True
+        cap = self.cap
+        self.cap = None
+        if cap is not None:
+            try:
+                cap.release()
+            except cv2.error:
+                pass
         self._logged_first_frame = False
+        self._failed_reads = 0

@@ -121,6 +121,36 @@ COMMAND_REGISTRY = {
         },
         "category": "rotation",
     },
+    "rc": {
+        "description": "Continuous joystick control using Tello rc left_right forward_back up_down yaw.",
+        "args": {
+            "left_right": {
+                "type": "integer",
+                "required": True,
+                "min": -100,
+                "max": 100,
+            },
+            "forward_back": {
+                "type": "integer",
+                "required": True,
+                "min": -100,
+                "max": 100,
+            },
+            "up_down": {
+                "type": "integer",
+                "required": True,
+                "min": -100,
+                "max": 100,
+            },
+            "yaw": {
+                "type": "integer",
+                "required": True,
+                "min": -100,
+                "max": 100,
+            },
+        },
+        "category": "movement",
+    },
     "stop": {
         "description": "Stop the drone and hover in place.",
         "args": {},

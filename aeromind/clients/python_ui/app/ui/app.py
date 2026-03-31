@@ -1,52 +1,62 @@
 from __future__ import annotations
 
-import time
 import threading
+import time
 import tkinter as tk
 from queue import Empty, Queue
 from typing import Any
-from tkinter import ttk
 
 import cv2
 import requests
+from PIL import Image, ImageTk
 
 from clients.python_ui.app.gesture.inference import GestureInference
 from clients.python_ui.app.gesture.mapper import GestureCommandMapper
+from clients.python_ui.app.ui.app_styles import configure_app_styles
+from clients.python_ui.app.ui.app_window import AppWindow
+from clients.python_ui.app.ui.ui_vars import AppUiVars
 
 API_BASE = "http://127.0.0.1:5000/api"
 VIDEO_URL = "http://127.0.0.1:8080/video"
+RC_SEND_INTERVAL_MS = 80
 
 
 class AeroMindClientApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("AeroMind Python UI")
-        self.root.geometry("760x720")
+        self.root.geometry("980x860")
+        self.root.minsize(920, 760)
+
+        self.style = configure_app_styles(self.root)
 
         self.api_base = API_BASE
         self.http = requests.Session()
 
-        self.status_var = tk.StringVar(value="Unknown")
-        self.mode_var = tk.StringVar(value="-")
-        self.flight_var = tk.StringVar(value="-")
-        self.battery_var = tk.StringVar(value="-")
-        self.height_var = tk.StringVar(value="-")
-        self.video_var = tk.StringVar(value=VIDEO_URL)
+        self.ui_vars = AppUiVars(self.root, VIDEO_URL)
+
+        self.status_var = self.ui_vars.status_var
+        self.mode_var = self.ui_vars.mode_var
+        self.flight_var = self.ui_vars.flight_var
+        self.battery_var = self.ui_vars.battery_var
+        self.height_var = self.ui_vars.height_var
+        self.video_var = self.ui_vars.video_var
+
+        self.gesture_enabled = self.ui_vars.gesture_enabled
+        self.gesture_status_var = self.ui_vars.gesture_status_var
+        self.raw_gesture_var = self.ui_vars.raw_gesture_var
+        self.stable_gesture_var = self.ui_vars.stable_gesture_var
+        self.last_queued_command_var = self.ui_vars.last_queued_command_var
+        self.last_sent_command_var = self.ui_vars.last_sent_command_var
+        self.last_dispatched_gesture_var = self.ui_vars.last_dispatched_gesture_var
+        self.dispatch_status_var = self.ui_vars.dispatch_status_var
+        self.command_pipeline_var = self.ui_vars.command_pipeline_var
+        self.left_stick_var = self.ui_vars.left_stick_var
+        self.right_stick_var = self.ui_vars.right_stick_var
+        self.rc_status_var = self.ui_vars.rc_status_var
 
         self.gesture_mapper = GestureCommandMapper()
-        self.gesture_enabled = tk.BooleanVar(value=False)
-        self.gesture_status_var = tk.StringVar(value="Gesture: OFF")
-        self.raw_gesture_var = tk.StringVar(value="Raw: -")
-        self.stable_gesture_var = tk.StringVar(value="Stable: -")
-        self.last_queued_command_var = tk.StringVar(value="Last Queued: -")
-        self.last_sent_command_var = tk.StringVar(value="Last Command: -")
-        self.last_dispatched_gesture_var = tk.StringVar(value="Last Gesture: -")
-        self.dispatch_status_var = tk.StringVar(value="Dispatch: idle")
-        self.command_pipeline_var = tk.StringVar(value="Command Queue: idle")
-
-        self.gesture_inference = GestureInference(
-            stability_ms=1200,
-        )
+        self.gesture_inference = GestureInference(stability_ms=1200)
 
         self.command_cooldown_seconds = 2.0
         self._last_command_sent_at = 0.0
@@ -56,10 +66,22 @@ class AeroMindClientApp:
         self._last_logged_raw_gesture: str | None = None
 
         self._status_refresh_in_progress = False
+        self._rc_values = {
+            "left_right": 0,
+            "forward_back": 0,
+            "up_down": 0,
+            "yaw": 0,
+        }
+        self._last_sent_rc_values: dict[str, int] | None = None
+        self._latest_rc_task: tuple[dict[str, Any], str] | None = None
+        self._rc_task_lock = threading.Lock()
+
         self._video_lock = threading.Lock()
         self._latest_frame = None
+        self._preview_photo = None
         self._video_running = True
         self._video_thread = threading.Thread(target=self._video_capture_loop, daemon=True)
+
         self._command_queue: Queue[tuple[dict[str, Any], str] | None] = Queue()
         self._command_worker_running = True
         self._command_worker_thread = threading.Thread(target=self._command_worker_loop, daemon=True)
@@ -70,110 +92,42 @@ class AeroMindClientApp:
 
         self._video_thread.start()
         self._command_worker_thread.start()
+
         self.root.after(100, self._refresh_status_async)
         self.root.after(400, self._gesture_tick)
+        self.root.after(RC_SEND_INTERVAL_MS, self._rc_send_tick)
+        self.root.after(50, self._video_preview_tick)
         self.root.after(1000, self._status_tick)
 
+    def _build_ui(self) -> None:
+        self.app_window = AppWindow(
+            self.root,
+            self.ui_vars,
+            on_refresh=self._refresh_status_async,
+            on_start_sim=lambda: self.start_controller("sim"),
+            on_start_drone=lambda: self.start_controller("drone"),
+            on_stop=self.stop_controller,
+            on_left_stick_change=self._on_left_stick_change,
+            on_right_stick_change=self._on_right_stick_change,
+            on_takeoff=lambda: self.send_cmd(self._command_payload("takeoff")),
+            on_land=lambda: self.send_cmd(self._command_payload("land")),
+            on_emergency=lambda: self.send_cmd(self._command_payload("emergency")),
+        )
+
+        self.main_frame = self.app_window.main_frame
+        self.status_panel = self.app_window.status_panel
+        self.action_panel = self.app_window.action_panel
+        self.video_panel = self.app_window.video_panel
+        self.manual_control_panel = self.app_window.manual_control_panel
+        self.gesture_panel = self.app_window.gesture_panel
+
+        self.video_preview_label = self.video_panel.preview_label
+        self.left_stick = self.manual_control_panel.left_stick
+        self.right_stick = self.manual_control_panel.right_stick
+
     def _bind_keys(self) -> None:
-        self.root.bind("<Up>", lambda e: self.send_cmd(self._command_payload("forward", distance_cm=50)))
-        self.root.bind("<Down>", lambda e: self.send_cmd(self._command_payload("back", distance_cm=50)))
-        self.root.bind("<Left>", lambda e: self.send_cmd(self._command_payload("ccw", degrees=30)))
-        self.root.bind("<Right>", lambda e: self.send_cmd(self._command_payload("cw", degrees=30)))
         self.root.bind("<space>", lambda e: self.send_cmd(self._command_payload("takeoff")))
         self.root.bind("<Escape>", lambda e: self.send_cmd(self._command_payload("land")))
-
-    def _build_ui(self) -> None:
-        self.main_frame = ttk.Frame(self.root, padding=16)
-        self.main_frame.pack(fill="both", expand=True)
-
-        title = ttk.Label(
-            self.main_frame,
-            text="AeroMind Client",
-            font=("Segoe UI", 16, "bold"),
-        )
-        title.pack(anchor="w", pady=(0, 12))
-
-        self._build_status_panel()
-        self._build_action_panel()
-        self._build_video_panel()
-        self._build_manual_controls_panel()
-        self._build_gesture_controls_panel()
-
-    def _build_status_panel(self) -> None:
-        status_box = ttk.LabelFrame(self.main_frame, text="Server State", padding=12)
-        status_box.pack(fill="x", pady=(0, 12))
-
-        ttk.Label(status_box, text="Running:").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(status_box, textvariable=self.status_var).grid(row=0, column=1, sticky="w", pady=2)
-
-        ttk.Label(status_box, text="Mode:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(status_box, textvariable=self.mode_var).grid(row=1, column=1, sticky="w", pady=2)
-
-        ttk.Label(status_box, text="Flying:").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(status_box, textvariable=self.flight_var).grid(row=2, column=1, sticky="w", pady=2)
-
-        ttk.Label(status_box, text="Battery:").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(status_box, textvariable=self.battery_var).grid(row=3, column=1, sticky="w", pady=2)
-
-        ttk.Label(status_box, text="Height:").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(status_box, textvariable=self.height_var).grid(row=4, column=1, sticky="w", pady=2)
-
-    def _build_action_panel(self) -> None:
-        actions = ttk.LabelFrame(self.main_frame, text="Actions", padding=12)
-        actions.pack(fill="x", pady=(0, 12))
-
-        ttk.Button(actions, text="Refresh", command=self._refresh_status_async).grid(row=0, column=0, padx=4, pady=4)
-        ttk.Button(actions, text="Start SIM", command=lambda: self.start_controller("sim")).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(actions, text="Start DRONE", command=lambda: self.start_controller("drone")).grid(row=0, column=2, padx=4, pady=4)
-        ttk.Button(actions, text="Stop", command=self.stop_controller).grid(row=0, column=3, padx=4, pady=4)
-
-    def _build_video_panel(self) -> None:
-        video_box = ttk.LabelFrame(self.main_frame, text="Video Stream", padding=12)
-        video_box.pack(fill="x", pady=(0, 12))
-
-        ttk.Label(video_box, text="MJPEG URL:").grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Entry(video_box, textvariable=self.video_var, width=60).grid(row=0, column=1, sticky="we")
-
-        info = ttk.Label(
-            video_box,
-            text="MJPEG frames are read in the background and fed into MediaPipe gesture detection.",
-            justify="left",
-        )
-        info.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-    def _build_manual_controls_panel(self) -> None:
-        controls = ttk.LabelFrame(self.main_frame, text="Manual Controller", padding=12)
-        controls.pack(fill="x", pady=(0, 12))
-
-        controls.columnconfigure((0, 1, 2), weight=1)
-
-        ttk.Button(controls, text="⟲ CCW", command=lambda: self.send_cmd(self._command_payload("ccw", degrees=90))).grid(row=0, column=0, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="↑ Forward", command=lambda: self.send_cmd(self._command_payload("forward", distance_cm=50))).grid(row=1, column=1, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="⟳ CW", command=lambda: self.send_cmd(self._command_payload("cw", degrees=90))).grid(row=0, column=2, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="← Left", command=lambda: self.send_cmd(self._command_payload("left", distance_cm=50))).grid(row=2, column=0, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="TAKEOFF", command=lambda: self.send_cmd(self._command_payload("takeoff"))).grid(row=2, column=1, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="→ Right", command=lambda: self.send_cmd(self._command_payload("right", distance_cm=50))).grid(row=2, column=2, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="↓ Back", command=lambda: self.send_cmd(self._command_payload("back", distance_cm=50))).grid(row=3, column=1, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="LAND", command=lambda: self.send_cmd(self._command_payload("land"))).grid(row=4, column=1, padx=6, pady=6, sticky="ew")
-        ttk.Button(controls, text="EMERGENCY", command=lambda: self.send_cmd(self._command_payload("emergency"))).grid(row=5, column=0, columnspan=3, padx=6, pady=10, sticky="ew")
-
-    def _build_gesture_controls_panel(self) -> None:
-        frame = ttk.LabelFrame(self.main_frame, text="Gesture Control", padding=12)
-        frame.pack(fill="x", pady=(0, 12))
-
-        ttk.Checkbutton(
-            frame,
-            text="Enable Gesture Control",
-            variable=self.gesture_enabled,
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Label(frame, textvariable=self.gesture_status_var).grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.raw_gesture_var).grid(row=1, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.stable_gesture_var).grid(row=2, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.last_queued_command_var).grid(row=2, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.last_dispatched_gesture_var).grid(row=3, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.dispatch_status_var).grid(row=3, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.last_sent_command_var).grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(frame, textvariable=self.command_pipeline_var).grid(row=4, column=1, sticky="w", padx=8, pady=4)
 
     def start_controller(self, mode: str) -> None:
         threading.Thread(target=self._start_controller_worker, args=(mode,), daemon=True).start()
@@ -295,6 +249,27 @@ class AeroMindClientApp:
                 return None
             return self._latest_frame.copy()
 
+    def _video_preview_tick(self) -> None:
+        try:
+            frame = self._get_latest_frame()
+            if frame is None:
+                if self._preview_photo is None:
+                    self.video_panel.set_waiting()
+                return
+
+            preview = cv2.resize(frame, (480, 270))
+            preview = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+            photo = ImageTk.PhotoImage(Image.fromarray(preview))
+            self._preview_photo = photo
+            self.video_panel.set_preview_image(photo)
+
+        except Exception:
+            self._preview_photo = None
+            self.video_panel.set_unavailable()
+        finally:
+            if self.root.winfo_exists():
+                self.root.after(50, self._video_preview_tick)
+
     def _gesture_tick(self) -> None:
         try:
             if not self.gesture_enabled.get():
@@ -320,9 +295,7 @@ class AeroMindClientApp:
 
             self.gesture_status_var.set("Gesture: ON")
             self.raw_gesture_var.set(f"Raw: {raw_gesture}")
-            self.stable_gesture_var.set(
-                f"Stable: {stable_gesture} ({prediction.stable_for_ms} ms)"
-            )
+            self.stable_gesture_var.set(f"Stable: {stable_gesture} ({prediction.stable_for_ms} ms)")
             self._log_raw_gesture(raw_gesture)
             self._update_stable_tracking(stable_gesture)
 
@@ -363,7 +336,6 @@ class AeroMindClientApp:
 
         self._last_command_sent_at = now
         formatted = self._format_command_payload(payload)
-        self._last_command_sent_value = formatted
         self._last_dispatched_gesture = stable_gesture
         self._last_blocked_signature = None
         self.last_sent_command_var.set(f"Last Command: {formatted}")
@@ -371,9 +343,52 @@ class AeroMindClientApp:
         self.dispatch_status_var.set(f"Dispatch: sent {payload['command']}")
         self._debug_log("command dispatched", gesture=stable_gesture, command=formatted)
 
+    def _on_left_stick_change(self, yaw: int, up_down: int) -> None:
+        self._rc_values["yaw"] = yaw
+        self._rc_values["up_down"] = up_down
+        self._update_rc_labels()
+
+    def _on_right_stick_change(self, left_right: int, forward_back: int) -> None:
+        self._rc_values["left_right"] = left_right
+        self._rc_values["forward_back"] = forward_back
+        self._update_rc_labels()
+
+    def _update_rc_labels(self) -> None:
+        self.left_stick_var.set(
+            f"Left Stick: yaw={self._rc_values['yaw']} up/down={self._rc_values['up_down']}"
+        )
+        self.right_stick_var.set(
+            f"Right Stick: left/right={self._rc_values['left_right']} forward/back={self._rc_values['forward_back']}"
+        )
+
+    def _rc_send_tick(self) -> None:
+        try:
+            rc_args = dict(self._rc_values)
+            active = any(rc_args.values())
+            last_active = bool(self._last_sent_rc_values and any(self._last_sent_rc_values.values()))
+
+            if active or last_active:
+                payload = self._command_payload("rc", **rc_args)
+                if self._send_api_command(payload, source="manual-rc"):
+                    self.rc_status_var.set(f"RC: queued {self._format_command_payload(payload)}")
+                else:
+                    self.rc_status_var.set("RC: enqueue failed")
+            else:
+                self.rc_status_var.set("RC: idle")
+        finally:
+            self.root.after(RC_SEND_INTERVAL_MS, self._rc_send_tick)
+
     def _send_api_command(self, payload: str | dict[str, Any], source: str = "manual") -> bool:
         normalized_payload = self._normalize_command_payload(payload)
         formatted = self._format_command_payload(normalized_payload)
+
+        if normalized_payload["command"] == "rc":
+            with self._rc_task_lock:
+                self._latest_rc_task = (normalized_payload, source)
+            self.last_queued_command_var.set(f"Last Queued: {formatted}")
+            self.command_pipeline_var.set("Command Queue: rc ready")
+            return True
+
         try:
             self._command_queue.put_nowait((normalized_payload, source))
             self.last_queued_command_var.set(f"Last Queued: {formatted}")
@@ -386,14 +401,12 @@ class AeroMindClientApp:
 
     def _command_worker_loop(self) -> None:
         while self._command_worker_running:
-            try:
-                task = self._command_queue.get(timeout=0.2)
-            except Empty:
-                continue
-
+            task, from_queue = self._next_command_task()
             if task is None:
-                self._command_queue.task_done()
-                break
+                if from_queue:
+                    self._command_queue.task_done()
+                    break
+                continue
 
             payload, source = task
             formatted = self._format_command_payload(payload)
@@ -408,21 +421,53 @@ class AeroMindClientApp:
                 response.raise_for_status()
                 self.root.after(0, self.last_sent_command_var.set, f"Last Command: {formatted}")
                 self.root.after(0, self.command_pipeline_var.set, "Command Queue: idle")
+                if payload["command"] == "rc":
+                    self._last_sent_rc_values = dict(payload.get("args") or {})
+                    self.root.after(0, self.rc_status_var.set, f"RC: sent {formatted}")
                 self._debug_log("command sent", source=source, command=formatted)
             except requests.RequestException:
                 self.root.after(0, self.command_pipeline_var.set, "Command Queue: send failed")
+                if payload["command"] == "rc":
+                    self.root.after(0, self.rc_status_var.set, "RC: send failed")
                 self._debug_log("command send failed", source=source, command=formatted)
             finally:
-                self._command_queue.task_done()
+                if from_queue:
+                    self._command_queue.task_done()
+
+    def _next_command_task(self) -> tuple[tuple[dict[str, Any], str] | None, bool]:
+        try:
+            task = self._command_queue.get(timeout=0.05)
+            got_queue_item = True
+        except Empty:
+            got_queue_item = False
+            task = None
+
+        if got_queue_item:
+            if task is None:
+                return None, True
+            return task, True
+
+        if task is None:
+            with self._rc_task_lock:
+                if self._latest_rc_task is None:
+                    return None, False
+                rc_task = self._latest_rc_task
+                self._latest_rc_task = None
+                return rc_task, False
+
+        return None, False
 
     def _on_close(self) -> None:
         self._video_running = False
         self._command_worker_running = False
         self._command_queue.put_nowait(None)
+
         if self._video_thread.is_alive():
             self._video_thread.join(timeout=1.0)
+
         if self._command_worker_thread.is_alive():
             self._command_worker_thread.join(timeout=1.0)
+
         self.root.destroy()
 
     def _update_stable_tracking(self, stable_gesture: str) -> None:
