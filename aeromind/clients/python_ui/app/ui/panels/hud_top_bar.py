@@ -10,12 +10,12 @@ class HudTopBar(QWidget):
         self.setObjectName("hudTopBar")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(10)
 
         left_group = QHBoxLayout()
         left_group.setSpacing(6)
-        self.connection_label = self._make_chip("Connection: Disconnected")
+        self.connection_label = self._make_chip("Connection: Offline")
         self.battery_label = self._make_chip("Battery: --")
         left_group.addWidget(self.connection_label)
         left_group.addWidget(self.battery_label)

@@ -100,8 +100,6 @@ class AppController:
     def start(self) -> None:
         log("[APP]", "Starting", run_id=self.cfg.run_id, mode="drone" if self.use_drone else "sim")
 
-        self.mjpeg.start()
-
         ok = self.drone.connect()
         if self.use_drone and not ok:
             log("[APP]", "Drone connect failed; staying in DRONE mode", fallback="disabled")
@@ -117,10 +115,12 @@ class AppController:
             if self.camera.start():
                 log("[VIDEO]", "Using Tello video stream", url=self.cfg.tello_video_url)
             else:
-                log("[VIDEO]", "Tello video stream FAILED", url=self.cfg.tello_video_url, fallback="disabled")
+                log("[VIDEO]", "Tello video stream not ready yet", url=self.cfg.tello_video_url)
         else:
             self.camera = Camera()
             log("[VIDEO]", "Using local camera stream")
+
+        self.mjpeg.start()
 
         self._cmd_running = True
         self._cmd_thread = threading.Thread(

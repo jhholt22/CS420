@@ -23,10 +23,17 @@ def apply_dark_theme(app: QApplication) -> None:
         }
 
         #videoSurfaceLabel {
-            color: rgba(148, 163, 184, 150);
-            font-size: 13px;
-            font-weight: 600;
+            color: rgba(226, 232, 240, 210);
+            font-size: 14px;
+            font-weight: 700;
             letter-spacing: 2px;
+        }
+
+        #videoSurfaceSubtext {
+            color: rgba(148, 163, 184, 170);
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.8px;
         }
 
         #videoOverlayContainer {
@@ -34,11 +41,11 @@ def apply_dark_theme(app: QApplication) -> None:
         }
 
         #videoStatusBadge {
-            background-color: rgba(6, 12, 24, 182);
+            background-color: rgba(6, 12, 24, 190);
             color: #dbe7f5;
-            border: 1px solid rgba(148, 163, 184, 42);
-            border-radius: 9px;
-            padding: 4px 10px;
+            border: 1px solid rgba(148, 163, 184, 38);
+            border-radius: 8px;
+            padding: 3px 10px;
             font-size: 10px;
             font-weight: 700;
             letter-spacing: 1px;
@@ -51,17 +58,21 @@ def apply_dark_theme(app: QApplication) -> None:
 
         #hudTitle {
             color: #f8fafc;
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: 2.4px;
+        }
+
+        #hudTitleAccent {
+            color: rgba(125, 211, 252, 220);
         }
 
         #hudChip {
-            background-color: rgba(8, 15, 29, 146);
+            background-color: rgba(8, 15, 29, 152);
             color: #dbe6f2;
-            border: 1px solid rgba(148, 163, 184, 22);
-            border-radius: 9px;
-            padding: 4px 10px;
+            border: 1px solid rgba(148, 163, 184, 20);
+            border-radius: 8px;
+            padding: 3px 10px;
             font-size: 10px;
             font-weight: 700;
         }
@@ -79,7 +90,7 @@ def apply_dark_theme(app: QApplication) -> None:
         #gestureToggleButton[state="on"] {
             background-color: rgba(14, 116, 144, 184);
             color: #f8fafc;
-            border: 1px solid rgba(103, 232, 249, 38);
+            border: 1px solid rgba(103, 232, 249, 36);
         }
 
         #gestureToggleButton[state="on"]:hover {

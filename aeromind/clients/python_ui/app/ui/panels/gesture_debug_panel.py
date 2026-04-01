@@ -13,8 +13,8 @@ class GestureDebugPanel(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 9, 10, 9)
-        layout.setSpacing(3)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
 
         self.gesture_toggle_button = QPushButton("GESTURE OFF", self)
         self.gesture_toggle_button.setObjectName("gestureToggleButton")
@@ -23,15 +23,19 @@ class GestureDebugPanel(QWidget):
         layout.addWidget(self.gesture_toggle_button)
 
         self.gesture_label = QLabel("Gesture: OFF", self)
-        self.raw_label = QLabel("Raw: -", self)
-        self.stable_label = QLabel("Stable: -", self)
-        self.last_command_label = QLabel("Last Command: -", self)
+        self.detector_label = QLabel("Detector: OFFLINE", self)
+        self.raw_label = QLabel("Raw: --", self)
+        self.stable_label = QLabel("Stable: --", self)
+        self.confidence_label = QLabel("Conf: --", self)
+        self.last_command_label = QLabel("Last: --", self)
         self.queue_label = QLabel("Queue: idle", self)
 
         for widget in (
             self.gesture_label,
+            self.detector_label,
             self.raw_label,
             self.stable_label,
+            self.confidence_label,
             self.last_command_label,
             self.queue_label,
         ):
@@ -41,14 +45,14 @@ class GestureDebugPanel(QWidget):
         self.setStyleSheet(
             """
             QWidget#gestureDebugPanel {
-                background-color: rgba(8, 15, 29, 162);
-                border: 1px solid rgba(148, 163, 184, 22);
+                background-color: rgba(8, 15, 29, 156);
+                border: 1px solid rgba(148, 163, 184, 18);
                 border-radius: 12px;
             }
             QPushButton#gestureToggleButton {
                 border: none;
                 border-radius: 8px;
-                padding: 5px 8px;
+                padding: 4px 8px;
                 font-size: 10px;
                 font-weight: 700;
                 text-align: center;
@@ -59,7 +63,7 @@ class GestureDebugPanel(QWidget):
                 background: transparent;
                 font-size: 10px;
                 font-weight: 600;
-                letter-spacing: 0.3px;
+                letter-spacing: 0.2px;
             }
             """
         )

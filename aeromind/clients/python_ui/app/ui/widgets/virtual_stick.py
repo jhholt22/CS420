@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget
 
 class VirtualStick(QWidget):
     valueChanged = Signal(int, int)
+    stickReleased = Signal()
 
     def __init__(self, title: str, size: int = 180, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -34,7 +35,7 @@ class VirtualStick(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._dragging = False
-            self._reset_to_center()
+            self._reset_to_center(emit_release=True)
         super().mouseReleaseEvent(event)
 
     def paintEvent(self, _event: QPaintEvent) -> None:
@@ -46,32 +47,32 @@ class VirtualStick(QWidget):
         radius = (min(self.width(), self.height()) / 2) - 20
         knob_radius = radius * 0.25
 
-        painter.setPen(QPen(QColor(148, 163, 184, 64), 1.25))
-        painter.setBrush(QColor(8, 15, 29, 78))
+        painter.setPen(QPen(QColor(148, 163, 184, 58), 1.2))
+        painter.setBrush(QColor(8, 15, 29, 72))
         painter.drawEllipse(center, radius, radius)
 
-        painter.setPen(QPen(QColor(125, 211, 252, 24), 1))
+        painter.setPen(QPen(QColor(125, 211, 252, 20), 1))
         painter.drawEllipse(center, radius * 0.62, radius * 0.62)
 
-        painter.setPen(QPen(QColor(100, 116, 139, 60), 1))
+        painter.setPen(QPen(QColor(100, 116, 139, 54), 1))
         painter.drawLine(center.x() - radius + 12, center.y(), center.x() + radius - 12, center.y())
         painter.drawLine(center.x(), center.y() - radius + 12, center.x(), center.y() + radius - 12)
 
         knob_center = QPointF(center) + self._knob_offset
-        painter.setPen(QPen(QColor(191, 219, 254, 88), 1))
-        painter.setBrush(QColor(30, 41, 59, 182))
+        painter.setPen(QPen(QColor(191, 219, 254, 76), 1))
+        painter.setBrush(QColor(30, 41, 59, 176))
         painter.drawEllipse(knob_center, knob_radius, knob_radius)
 
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(125, 211, 252, 36))
-        painter.drawEllipse(knob_center, knob_radius * 0.42, knob_radius * 0.42)
+        painter.setBrush(QColor(125, 211, 252, 28))
+        painter.drawEllipse(knob_center, knob_radius * 0.4, knob_radius * 0.4)
 
         painter.setPen(QColor("#e2e8f0"))
         title_font = QFont()
-        title_font.setPointSize(9)
+        title_font.setPointSize(8)
         title_font.setBold(True)
         painter.setFont(title_font)
-        painter.drawText(0, 10, self.width(), 20, Qt.AlignHCenter | Qt.AlignTop, self.title.upper())
+        painter.drawText(0, 11, self.width(), 18, Qt.AlignHCenter | Qt.AlignTop, self.title.upper())
 
         value_font = QFont()
         value_font.setPointSize(8)
@@ -119,7 +120,11 @@ class VirtualStick(QWidget):
         self.y_value = max(-100, min(100, y_value))
         self.valueChanged.emit(self.x_value, self.y_value)
 
-    def _reset_to_center(self) -> None:
+    def _reset_to_center(self, emit_release: bool = False) -> None:
         self._knob_offset = QPointF(0.0, 0.0)
-        self._update_values()
+        self.x_value = 0
+        self.y_value = 0
+        self.valueChanged.emit(0, 0)
+        if emit_release:
+            self.stickReleased.emit()
         self.update()

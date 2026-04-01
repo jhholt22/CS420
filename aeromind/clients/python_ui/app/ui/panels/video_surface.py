@@ -45,16 +45,25 @@ class VideoSurface(QWidget):
         super().__init__(parent)
         self.setObjectName("videoSurface")
         self.setAutoFillBackground(True)
-        self._has_video = False
+        self._is_live = False
+        self._current_status = "No Signal"
 
         palette = self.palette()
         palette.setColor(QPalette.Window, QColor("#020617"))
         self.setPalette(palette)
 
-        self.video_label = QLabel("NO LIVE FEED", self)
+        self.video_label = QLabel("", self)
         self.video_label.setObjectName("videoSurfaceLabel")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setScaledContents(False)
+
+        self.placeholder_label = QLabel("NO DRONE FEED", self)
+        self.placeholder_label.setObjectName("videoSurfaceLabel")
+        self.placeholder_label.setAlignment(Qt.AlignCenter)
+
+        self.placeholder_subtext = QLabel("Waiting for MJPEG stream", self)
+        self.placeholder_subtext.setObjectName("videoSurfaceSubtext")
+        self.placeholder_subtext.setAlignment(Qt.AlignCenter)
 
         self.reticle_overlay = _ReticleOverlay(self)
         self.reticle_overlay.raise_()
@@ -71,31 +80,61 @@ class VideoSurface(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.video_label.setGeometry(self.rect())
+        self.placeholder_label.setGeometry(0, max(0, self.height() // 2 - 26), self.width(), 24)
+        self.placeholder_subtext.setGeometry(0, max(0, self.height() // 2 + 2), self.width(), 18)
         self.reticle_overlay.setGeometry(self.rect())
         self.overlay_container.setGeometry(self.rect())
         self.stream_status_label.setGeometry(self.width() - 138, 18, 118, 28)
 
     def set_video_pixmap(self, pixmap: QPixmap) -> None:
         if pixmap.isNull():
-            self._has_video = False
             self.video_label.setPixmap(QPixmap())
-            self.video_label.setText("NO LIVE FEED")
-            self.reticle_overlay.show()
+            self.set_stream_live(False)
             return
 
-        self._has_video = True
         scaled = pixmap.scaled(
             self.video_label.size(),
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
         self.video_label.setPixmap(scaled)
-        self.video_label.setText("")
-        self.reticle_overlay.hide()
+        self.set_stream_live(True)
 
     def set_stream_status(self, text: str) -> None:
-        status_text = text.upper() if text else "NO SIGNAL"
+        self._current_status = text.strip() if text else "No Signal"
+        status_text = self._current_status.upper()
         self.stream_status_label.setText(status_text)
-        if text != "Live" and not self._has_video:
-            self.video_label.setText("NO LIVE FEED")
-            self.reticle_overlay.show()
+
+        if self._current_status == "Live":
+            self.set_stream_live(True)
+            return
+
+        self.set_stream_live(False)
+
+        if self._current_status == "Connecting":
+            self.placeholder_label.setText("CONNECTING TO DRONE FEED")
+            self.placeholder_subtext.setText("Opening MJPEG stream")
+        elif self._current_status == "Reconnecting":
+            self.placeholder_label.setText("RECONNECTING")
+            self.placeholder_subtext.setText("Restoring MJPEG stream")
+        elif self._current_status == "Stopped":
+            self.placeholder_label.setText("FEED STOPPED")
+            self.placeholder_subtext.setText("Video worker stopped")
+        else:
+            self.placeholder_label.setText("NO DRONE FEED")
+            self.placeholder_subtext.setText("Waiting for MJPEG stream")
+
+    def set_stream_live(self, is_live: bool) -> None:
+        self._is_live = is_live
+        has_pixmap = self.video_label.pixmap() is not None and not self.video_label.pixmap().isNull()
+
+        if is_live and has_pixmap:
+            self.placeholder_label.hide()
+            self.placeholder_subtext.hide()
+            self.reticle_overlay.hide()
+            return
+
+        self.video_label.setPixmap(QPixmap())
+        self.placeholder_label.show()
+        self.placeholder_subtext.show()
+        self.reticle_overlay.show()
