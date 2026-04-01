@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 
 class GestureDebugPanel(QWidget):
+    gestureToggleClicked = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("gestureDebugPanel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(3)
+
+        self.gesture_toggle_button = QPushButton("GESTURE OFF", self)
+        self.gesture_toggle_button.setObjectName("gestureToggleButton")
+        self.gesture_toggle_button.setProperty("state", "off")
+        self.gesture_toggle_button.clicked.connect(self.gestureToggleClicked)
+        layout.addWidget(self.gesture_toggle_button)
 
         self.gesture_label = QLabel("Gesture: OFF", self)
         self.raw_label = QLabel("Raw: -", self)
@@ -31,15 +41,25 @@ class GestureDebugPanel(QWidget):
         self.setStyleSheet(
             """
             QWidget#gestureDebugPanel {
-                background-color: rgba(15, 23, 42, 148);
-                border: 1px solid rgba(148, 163, 184, 28);
-                border-radius: 14px;
+                background-color: rgba(8, 15, 29, 162);
+                border: 1px solid rgba(148, 163, 184, 22);
+                border-radius: 12px;
+            }
+            QPushButton#gestureToggleButton {
+                border: none;
+                border-radius: 8px;
+                padding: 5px 8px;
+                font-size: 10px;
+                font-weight: 700;
+                text-align: center;
+                letter-spacing: 0.4px;
             }
             QLabel#gestureDebugValue {
-                color: #cbd5e1;
+                color: #d5deea;
                 background: transparent;
-                font-size: 11px;
-                font-weight: 500;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.3px;
             }
             """
         )

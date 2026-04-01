@@ -30,10 +30,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.video_surface)
 
         self.hud_top_bar = HudTopBar(self.video_surface.overlay_container)
-        self.left_stick = VirtualStick("Yaw / Up-Down", parent=self.video_surface.overlay_container)
-        self.right_stick = VirtualStick("Left-Right / Forward-Back", parent=self.video_surface.overlay_container)
+        self.left_stick = VirtualStick("Yaw / Up-Down", size=216, parent=self.video_surface.overlay_container)
+        self.right_stick = VirtualStick("Left-Right / Forward-Back", size=216, parent=self.video_surface.overlay_container)
         self.flight_action_cluster = FlightActionCluster(self.video_surface.overlay_container)
         self.gesture_debug_panel = GestureDebugPanel(self.video_surface.overlay_container)
+        self.gesture_enabled = False
 
         self.hud_top_bar.raise_()
         self.left_stick.raise_()
@@ -89,27 +90,27 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _layout_overlays(self) -> None:
-        margin = 20
+        edge_margin = 32
         top_margin = 18
-        bottom_margin = 20
-        stack_spacing = 14
+        bottom_margin = 34
+        stack_spacing = 18
 
         surface_width = self.video_surface.width()
         surface_height = self.video_surface.height()
 
-        top_bar_width = max(760, surface_width - (margin * 2))
-        self.hud_top_bar.setGeometry(margin, top_margin, top_bar_width, 60)
+        top_bar_width = max(760, surface_width - (edge_margin * 2))
+        self.hud_top_bar.setGeometry(edge_margin, top_margin, top_bar_width, 44)
 
         left_size = self.left_stick.size()
         right_size = self.right_stick.size()
         left_y = surface_height - left_size.height() - bottom_margin
         right_y = surface_height - right_size.height() - bottom_margin
 
-        self.left_stick.move(margin, left_y)
-        self.right_stick.move(surface_width - right_size.width() - margin, right_y)
+        self.left_stick.move(edge_margin, left_y)
+        self.right_stick.move(surface_width - right_size.width() - edge_margin, right_y)
 
         cluster_size = self.flight_action_cluster.sizeHint()
-        cluster_x = surface_width - cluster_size.width() - margin
+        cluster_x = surface_width - cluster_size.width() - edge_margin
         cluster_y = right_y - cluster_size.height() - stack_spacing
         cluster_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
         cluster_y = max(cluster_min_y, cluster_y)
@@ -121,7 +122,7 @@ class MainWindow(QMainWindow):
         )
 
         debug_size = self.gesture_debug_panel.sizeHint()
-        debug_x = surface_width - debug_size.width() - margin
+        debug_x = surface_width - debug_size.width() - edge_margin
         debug_y = cluster_y - debug_size.height() - stack_spacing
         debug_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
         debug_y = max(debug_min_y, debug_y)
@@ -140,6 +141,10 @@ class MainWindow(QMainWindow):
 
     def _apply_debug_defaults(self) -> None:
         self.gesture_debug_panel.gesture_label.setText("Gesture: OFF")
+        self.gesture_debug_panel.gesture_toggle_button.setText("GESTURE OFF")
+        self.gesture_debug_panel.gesture_toggle_button.setProperty("state", "off")
+        self.gesture_debug_panel.gesture_toggle_button.style().unpolish(self.gesture_debug_panel.gesture_toggle_button)
+        self.gesture_debug_panel.gesture_toggle_button.style().polish(self.gesture_debug_panel.gesture_toggle_button)
         self.gesture_debug_panel.raw_label.setText("Raw: -")
         self.gesture_debug_panel.stable_label.setText("Stable: -")
         self.gesture_debug_panel.last_command_label.setText("Last Command: -")
@@ -152,6 +157,7 @@ class MainWindow(QMainWindow):
         self.flight_action_cluster.takeoffClicked.connect(self._on_takeoff_clicked)
         self.flight_action_cluster.landClicked.connect(self._on_land_clicked)
         self.flight_action_cluster.emergencyClicked.connect(self._on_emergency_clicked)
+        self.gesture_debug_panel.gestureToggleClicked.connect(self._on_gesture_toggle_clicked)
 
         self.left_stick.valueChanged.connect(self._on_left_stick_changed)
         self.right_stick.valueChanged.connect(self._on_right_stick_changed)
@@ -179,6 +185,27 @@ class MainWindow(QMainWindow):
     def _on_emergency_clicked(self) -> None:
         print("EMERGENCY clicked", flush=True)
         self._call_api(lambda: self.api_client.send_command("emergency"))
+
+    def _on_gesture_toggle_clicked(self) -> None:
+        self.gesture_enabled = not self.gesture_enabled
+        button = self.gesture_debug_panel.gesture_toggle_button
+
+        if self.gesture_enabled:
+            self.gesture_debug_panel.gesture_label.setText("Gesture: ON")
+            button.setText("GESTURE ON")
+            button.setProperty("state", "on")
+        else:
+            self.gesture_debug_panel.gesture_label.setText("Gesture: OFF")
+            self.gesture_debug_panel.raw_label.setText("Raw: -")
+            self.gesture_debug_panel.stable_label.setText("Stable: -")
+            self.gesture_debug_panel.last_command_label.setText("Last Command: -")
+            self.gesture_debug_panel.queue_label.setText("Queue: idle")
+            button.setText("GESTURE OFF")
+            button.setProperty("state", "off")
+
+        button.style().unpolish(button)
+        button.style().polish(button)
+        button.update()
 
     def _on_left_stick_changed(self, x_value: int, y_value: int) -> None:
         print(f"LEFT STICK x={x_value} y={y_value}", flush=True)
