@@ -18,11 +18,11 @@ class FlightActionCluster(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(14, 14, 14, 14)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(7)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(8)
+        top_row.setSpacing(6)
         self.start_sim_button = self._make_button("START SIM", "secondary")
         self.start_drone_button = self._make_button("START DRONE", "secondary")
         self.stop_button = self._make_button("STOP", "secondary")
@@ -32,8 +32,8 @@ class FlightActionCluster(QWidget):
         root_layout.addLayout(top_row)
 
         main_grid = QGridLayout()
-        main_grid.setHorizontalSpacing(8)
-        main_grid.setVerticalSpacing(8)
+        main_grid.setHorizontalSpacing(6)
+        main_grid.setVerticalSpacing(6)
         self.takeoff_button = self._make_button("TAKEOFF", "primary")
         self.land_button = self._make_button("LAND", "primary")
         self.emergency_button = self._make_button("EMERGENCY", "danger")
@@ -52,35 +52,38 @@ class FlightActionCluster(QWidget):
         self.setStyleSheet(
             """
             QWidget#flightActionCluster {
-                background-color: rgba(15, 23, 42, 220);
-                border-radius: 18px;
+                background-color: rgba(15, 23, 42, 76);
+                border: 1px solid rgba(148, 163, 184, 20);
+                border-radius: 14px;
             }
             QPushButton {
                 border: none;
-                border-radius: 12px;
+                border-radius: 9px;
                 color: #f8fafc;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 700;
-                padding: 10px 14px;
+                padding: 7px 10px;
             }
             QPushButton[variant="primary"] {
-                background-color: #2563eb;
+                background-color: rgba(37, 99, 235, 176);
             }
             QPushButton[variant="primary"]:hover {
-                background-color: #1d4ed8;
+                background-color: rgba(29, 78, 216, 190);
             }
             QPushButton[variant="danger"] {
-                background-color: #dc2626;
+                background-color: rgba(220, 38, 38, 196);
+                padding: 8px 10px;
             }
             QPushButton[variant="danger"]:hover {
-                background-color: #b91c1c;
+                background-color: rgba(185, 28, 28, 210);
             }
             QPushButton[variant="secondary"] {
-                background-color: rgba(51, 65, 85, 230);
+                background-color: rgba(51, 65, 85, 148);
                 color: #cbd5e1;
+                padding: 6px 9px;
             }
             QPushButton[variant="secondary"]:hover {
-                background-color: rgba(71, 85, 105, 230);
+                background-color: rgba(71, 85, 105, 164);
             }
             """
         )

@@ -11,11 +11,11 @@ class HudTopBar(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(16)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(12)
 
         left_group = QHBoxLayout()
-        left_group.setSpacing(10)
+        left_group.setSpacing(8)
         self.connection_label = self._make_chip("Connection: Disconnected")
         self.battery_label = self._make_chip("Battery: --")
         left_group.addWidget(self.connection_label)
@@ -26,7 +26,7 @@ class HudTopBar(QWidget):
         self.title_label.setAlignment(Qt.AlignCenter)
 
         right_group = QHBoxLayout()
-        right_group.setSpacing(10)
+        right_group.setSpacing(8)
         self.mode_label = self._make_chip("Mode: --")
         self.altitude_label = self._make_chip("Height: --")
         right_group.addWidget(self.mode_label)

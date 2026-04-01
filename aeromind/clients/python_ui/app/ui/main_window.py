@@ -89,31 +89,45 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _layout_overlays(self) -> None:
-        width = max(720, self.video_surface.width() - 48)
-        self.hud_top_bar.setGeometry(24, 20, width, 72)
+        margin = 20
+        top_margin = 18
+        bottom_margin = 20
+        stack_spacing = 14
 
-        margin = 28
-        bottom_margin = 26
-        surface_height = self.video_surface.height()
         surface_width = self.video_surface.width()
+        surface_height = self.video_surface.height()
+
+        top_bar_width = max(760, surface_width - (margin * 2))
+        self.hud_top_bar.setGeometry(margin, top_margin, top_bar_width, 60)
 
         left_size = self.left_stick.size()
         right_size = self.right_stick.size()
-        self.left_stick.move(margin, surface_height - left_size.height() - bottom_margin)
-        self.right_stick.move(
-            surface_width - right_size.width() - margin,
-            surface_height - right_size.height() - bottom_margin,
-        )
+        left_y = surface_height - left_size.height() - bottom_margin
+        right_y = surface_height - right_size.height() - bottom_margin
+
+        self.left_stick.move(margin, left_y)
+        self.right_stick.move(surface_width - right_size.width() - margin, right_y)
 
         cluster_size = self.flight_action_cluster.sizeHint()
         cluster_x = surface_width - cluster_size.width() - margin
-        cluster_y = max(120, surface_height - right_size.height() - cluster_size.height() - 48)
-        self.flight_action_cluster.setGeometry(cluster_x, cluster_y, cluster_size.width(), cluster_size.height())
+        cluster_y = right_y - cluster_size.height() - stack_spacing
+        cluster_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
+        cluster_y = max(cluster_min_y, cluster_y)
+        self.flight_action_cluster.setGeometry(
+            cluster_x,
+            cluster_y,
+            cluster_size.width(),
+            cluster_size.height(),
+        )
 
         debug_size = self.gesture_debug_panel.sizeHint()
+        debug_x = surface_width - debug_size.width() - margin
+        debug_y = cluster_y - debug_size.height() - stack_spacing
+        debug_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
+        debug_y = max(debug_min_y, debug_y)
         self.gesture_debug_panel.setGeometry(
-            surface_width - debug_size.width() - margin,
-            surface_height - debug_size.height() - bottom_margin,
+            debug_x,
+            debug_y,
             debug_size.width(),
             debug_size.height(),
         )

@@ -8,13 +8,13 @@ def apply_dark_theme(app: QApplication) -> None:
         """
         QWidget {
             background-color: #0f172a;
-            color: white;
+            color: #f8fafc;
             font-family: "Segoe UI";
-            font-size: 14px;
+            font-size: 13px;
         }
 
         QLabel {
-            color: #e5e7eb;
+            color: #dbe4f0;
             background: transparent;
         }
 
@@ -23,10 +23,10 @@ def apply_dark_theme(app: QApplication) -> None:
         }
 
         #videoSurfaceLabel {
-            color: #94a3b8;
-            font-size: 30px;
+            color: rgba(148, 163, 184, 170);
+            font-size: 18px;
             font-weight: 600;
-            letter-spacing: 1px;
+            letter-spacing: 2px;
         }
 
         #videoOverlayContainer {
@@ -34,28 +34,36 @@ def apply_dark_theme(app: QApplication) -> None:
         }
 
         #videoStatusBadge {
-            background-color: rgba(15, 23, 42, 220);
+            background-color: rgba(15, 23, 42, 176);
             color: #e2e8f0;
-            border-radius: 12px;
-            padding: 6px 10px;
+            border: 1px solid rgba(148, 163, 184, 50);
+            border-radius: 10px;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 700;
         }
 
         #hudTopBar {
-            background-color: rgba(15, 23, 42, 210);
-            border-radius: 18px;
+            background-color: rgba(15, 23, 42, 172);
+            border: 1px solid rgba(148, 163, 184, 35);
+            border-radius: 16px;
         }
 
         #hudTitle {
             color: #f8fafc;
-            font-size: 22px;
+            font-size: 18px;
             font-weight: 700;
+            letter-spacing: 1px;
         }
 
         #hudChip {
-            background-color: rgba(30, 41, 59, 220);
+            background-color: rgba(30, 41, 59, 150);
             color: #e2e8f0;
-            border-radius: 14px;
-            padding: 8px 14px;
+            border: 1px solid rgba(148, 163, 184, 28);
+            border-radius: 11px;
+            padding: 6px 10px;
+            font-size: 11px;
+            font-weight: 600;
         }
         """
     )
