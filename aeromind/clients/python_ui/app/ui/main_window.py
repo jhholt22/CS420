@@ -230,9 +230,15 @@ class MainWindow(QMainWindow):
         self._call_api(lambda: self.app_controller.rc_controller.flush(force=True), suppress_noop=True)
 
     def _on_raw_frame_ready(self, frame: object) -> None:
-        if self._is_shutting_down or not self.app_controller.gesture_controller.is_enabled():
+        if self._is_shutting_down:
             return
 
+        if not self.app_controller.gesture_controller.is_enabled():
+            return
+
+        self._process_gesture_frame(frame)
+
+    def _process_gesture_frame(self, frame: object) -> None:
         try:
             result = self.gesture_inference_service.process_frame(frame)
             debug_state = self.app_controller.gesture_controller.update_from_result(result)
@@ -241,9 +247,12 @@ class MainWindow(QMainWindow):
             command_name = result.command_name
             if self.app_controller.gesture_controller.should_dispatch_command(command_name):
                 assert command_name is not None
-                self._call_api(lambda: self.app_controller.command_controller.execute_gesture_command(command_name))
-                self.app_controller.gesture_controller.mark_command_dispatched(command_name)
-                self._sync_gesture_panel_from_state()
+                dispatch_result = self._call_api(
+                    lambda: self.app_controller.command_controller.execute_gesture_command(command_name)
+                )
+                if dispatch_result is not None:
+                    self.app_controller.gesture_controller.mark_command_dispatched(command_name)
+                    self._sync_gesture_panel_from_state()
         except ApiClientError as exc:
             self._on_status_error(str(exc))
         except Exception:
@@ -311,7 +320,11 @@ class MainWindow(QMainWindow):
             button.setText("GESTURE OFF")
             button.setProperty("state", "off")
 
-        detector_available = bool(state.get("detector_available", self.gesture_inference_service.is_detector_available()))
+        detector_available_state = state.get("detector_available")
+        if self.app_state.gesture_enabled and isinstance(detector_available_state, bool):
+            detector_available = detector_available_state
+        else:
+            detector_available = self.gesture_inference_service.is_detector_available()
         self.gesture_debug_panel.gesture_label.setText(f"Gesture: {state['gesture']}")
         self.gesture_debug_panel.detector_label.setText(
             "Detector: READY" if detector_available else "Detector: OFFLINE"
@@ -374,10 +387,12 @@ class MainWindow(QMainWindow):
             return "offline"
         return text
 
-    def _call_api(self, action, suppress_noop: bool = False) -> None:
+    def _call_api(self, action, suppress_noop: bool = False):
         try:
             result = action()
             if result is None and suppress_noop:
                 return
+            return result
         except ApiClientError as exc:
             self._on_status_error(str(exc))
+            return None

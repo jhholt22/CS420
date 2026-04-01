@@ -23,14 +23,20 @@ class GestureInferenceResult:
 
 
 class GestureInferenceService:
+    _NOISE_MARKER = "__noise__"
+
     def __init__(
         self,
         stability_frames: int = 5,
+        dominance_frames: int = 4,
         min_confidence: float = 0.7,
+        noise_confidence_floor: float = 0.55,
         max_num_hands: int = 1,
     ) -> None:
         self.stability_frames = max(1, int(stability_frames))
+        self.dominance_frames = max(1, min(self.stability_frames, int(dominance_frames)))
         self.min_confidence = max(0.0, min(1.0, float(min_confidence)))
+        self.noise_confidence_floor = max(0.0, min(1.0, float(noise_confidence_floor)))
         self.max_num_hands = max(1, int(max_num_hands))
         self._history: Deque[str | None] = deque(maxlen=self.stability_frames)
         self._gesture_command_map = {
@@ -39,6 +45,20 @@ class GestureInferenceService:
             "thumbs_up": "up",
             "thumbs_down": "down",
             "point_up": "forward",
+        }
+        self._enabled_gesture_commands = {
+            "open_palm",
+            "fist",
+            "thumbs_up",
+            "thumbs_down",
+            "point_up",
+        }
+        self._gesture_safety_rules = {
+            "open_palm": {"min_confidence": 0.88, "required_hits": self.stability_frames},
+            "fist": {"min_confidence": 0.88, "required_hits": self.stability_frames},
+            "thumbs_up": {"min_confidence": max(self.min_confidence, 0.78), "required_hits": self.dominance_frames},
+            "thumbs_down": {"min_confidence": max(self.min_confidence, 0.78), "required_hits": self.dominance_frames},
+            "point_up": {"min_confidence": max(self.min_confidence, 0.8), "required_hits": self.dominance_frames},
         }
         self._mp_hands = None
         self._hands = None
@@ -71,15 +91,33 @@ class GestureInferenceService:
             )
 
         raw_gesture, confidence = self._classify_landmarks(hand_landmarks, handedness)
-        stable_gesture = self._stabilize_gesture(raw_gesture)
-        command_name = None
-        queue_state = "stabilizing"
-
         if raw_gesture is None:
-            queue_state = "detecting"
-        elif stable_gesture and confidence is not None and confidence >= self.min_confidence:
-            command_name = self._gesture_command_map.get(stable_gesture)
-            queue_state = "ready" if command_name else "stabilizing"
+            self._history.append(None)
+            stable_gesture = self._stabilize_gesture()
+            return GestureInferenceResult(
+                raw_gesture=None,
+                stable_gesture=stable_gesture,
+                confidence=confidence,
+                command_name=None,
+                queue_state="detecting",
+                detector_available=self._detector_available,
+            )
+
+        if confidence is None or confidence < self.noise_confidence_floor:
+            self._history.append(self._NOISE_MARKER)
+            stable_gesture = self._stabilize_gesture()
+            return GestureInferenceResult(
+                raw_gesture=raw_gesture,
+                stable_gesture=stable_gesture,
+                confidence=confidence,
+                command_name=None,
+                queue_state="low_confidence",
+                detector_available=self._detector_available,
+            )
+
+        self._history.append(raw_gesture)
+        stable_gesture, stable_hits = self._stabilize_gesture(with_count=True)
+        command_name, queue_state = self._resolve_command(stable_gesture, stable_hits, confidence)
 
         return GestureInferenceResult(
             raw_gesture=raw_gesture,
@@ -95,6 +133,13 @@ class GestureInferenceService:
 
     def is_detector_available(self) -> bool:
         return self._detector_available
+
+    def get_enabled_gesture_commands(self) -> dict[str, str]:
+        return {
+            gesture_name: command_name
+            for gesture_name, command_name in self._gesture_command_map.items()
+            if gesture_name in self._enabled_gesture_commands
+        }
 
     def _initialize_detector(self) -> None:
         if mp is None:
@@ -150,12 +195,13 @@ class GestureInferenceService:
 
         extended_count = sum(bool(value) for value in finger_states.values())
         other_folded = not finger_states["index"] and not finger_states["middle"] and not finger_states["ring"] and not finger_states["pinky"]
+        index_above_middle = landmarks.landmark[8].y < landmarks.landmark[12].y - 0.03
 
         if finger_states["thumb"] and all(finger_states[name] for name in ("index", "middle", "ring", "pinky")):
-            return "open_palm", 0.9
+            return "open_palm", 0.94
 
         if extended_count == 0:
-            return "fist", 0.9
+            return "fist", 0.94
 
         if (
             finger_states["index"]
@@ -163,20 +209,21 @@ class GestureInferenceService:
             and not finger_states["ring"]
             and not finger_states["pinky"]
             and not finger_states["thumb"]
+            and index_above_middle
         ):
-            return "point_up", 0.84
+            return "point_up", 0.86
 
         if finger_states["thumb"] and other_folded:
             if thumb_vertical == "up":
-                return "thumbs_up", 0.86
+                return "thumbs_up", 0.88
             if thumb_vertical == "down":
-                return "thumbs_down", 0.86
+                return "thumbs_down", 0.88
 
         if extended_count >= 4:
-            return "open_palm", 0.74
+            return "open_palm", 0.68
 
         if extended_count <= 1:
-            return "fist", 0.72
+            return "fist", 0.66
 
         return None, None
 
@@ -219,14 +266,50 @@ class GestureInferenceService:
             return "down"
         return None
 
-    def _stabilize_gesture(self, raw_gesture: str | None) -> str | None:
-        self._history.append(raw_gesture)
-        if len(self._history) < self.stability_frames:
-            return None
+    def _resolve_command(
+        self,
+        stable_gesture: str | None,
+        stable_hits: int,
+        confidence: float | None,
+    ) -> tuple[str | None, str]:
+        if stable_gesture is None:
+            return None, "stabilizing"
 
-        first = self._history[0]
-        if first is None:
-            return None
-        if all(item == first for item in self._history):
-            return first
-        return None
+        if confidence is None or confidence < self.min_confidence:
+            return None, "low_confidence"
+
+        if stable_gesture not in self._enabled_gesture_commands:
+            return None, "disabled"
+
+        command_name = self._gesture_command_map.get(stable_gesture)
+        if not command_name:
+            return None, "stabilizing"
+
+        safety_rule = self._gesture_safety_rules.get(stable_gesture, {})
+        min_confidence = float(safety_rule.get("min_confidence", self.min_confidence))
+        required_hits = int(safety_rule.get("required_hits", self.dominance_frames))
+
+        if confidence < min_confidence:
+            return None, "guarded"
+        if stable_hits < required_hits:
+            return None, "stabilizing"
+        return command_name, "ready"
+
+    def _stabilize_gesture(self, with_count: bool = False) -> str | tuple[str | None, int] | None:
+        if len(self._history) < self.dominance_frames:
+            return (None, 0) if with_count else None
+
+        counts: dict[str, int] = {}
+        for item in self._history:
+            if item is None or item == self._NOISE_MARKER:
+                continue
+            counts[item] = counts.get(item, 0) + 1
+
+        if not counts:
+            return (None, 0) if with_count else None
+
+        stable_gesture, stable_hits = max(counts.items(), key=lambda entry: entry[1])
+        if stable_hits < self.dominance_frames:
+            return (None, stable_hits) if with_count else None
+
+        return (stable_gesture, stable_hits) if with_count else stable_gesture

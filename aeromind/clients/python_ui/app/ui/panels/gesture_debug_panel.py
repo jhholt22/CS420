@@ -26,8 +26,8 @@ class GestureDebugPanel(QWidget):
         self.detector_label = QLabel("Detector: OFFLINE", self)
         self.raw_label = QLabel("Raw: --", self)
         self.stable_label = QLabel("Stable: --", self)
-        self.confidence_label = QLabel("Conf: --", self)
-        self.last_command_label = QLabel("Last: --", self)
+        self.confidence_label = QLabel("Confidence: --", self)
+        self.last_command_label = QLabel("Last Command: --", self)
         self.queue_label = QLabel("Queue: idle", self)
 
         for widget in (

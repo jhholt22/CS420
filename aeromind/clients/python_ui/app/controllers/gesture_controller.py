@@ -38,6 +38,9 @@ class GestureController:
         self._confidence: float | None = None
         self._pending_command: str | None = None
         self._detector_available = False
+        self._active_ready_command: str | None = None
+        self._last_ready_command: str | None = None
+        self._last_stable_gesture_name: str | None = None
         self._last_dispatched_command: str | None = None
         self._last_dispatched_at = 0.0
 
@@ -55,8 +58,18 @@ class GestureController:
 
         if not self._detector_available:
             self._pending_command = None
+            self._active_ready_command = None
+            self._last_ready_command = None
+            self._last_stable_gesture_name = None
             if self._queue_state == "idle":
                 self._queue_state = "detector_unavailable"
+            return self.get_debug_state()
+
+        current_stable_gesture = result.stable_gesture
+        if current_stable_gesture is None or current_stable_gesture != self._last_stable_gesture_name:
+            self._active_ready_command = None
+            self._last_ready_command = None
+        self._last_stable_gesture_name = current_stable_gesture
 
         return self.get_debug_state()
 
@@ -64,12 +77,22 @@ class GestureController:
         if not self._enabled or not self._detector_available or not command_name:
             return False
 
+        if self._last_ready_command != command_name:
+            self._active_ready_command = None
+        self._last_ready_command = command_name
+
+        if self._active_ready_command == command_name:
+            self._queue_state = "holding"
+            return False
+
         now = monotonic()
         elapsed_ms = (now - self._last_dispatched_at) * 1000.0
         if self._last_dispatched_command == command_name and elapsed_ms < self._cooldown_ms:
+            self._active_ready_command = command_name
             self._queue_state = "cooldown"
             return False
 
+        self._active_ready_command = command_name
         self._queue_state = "dispatch"
         return True
 
@@ -77,6 +100,8 @@ class GestureController:
         self._last_command = command_name
         self._last_dispatched_command = command_name
         self._last_dispatched_at = monotonic()
+        self._active_ready_command = command_name
+        self._last_ready_command = command_name
         self._queue_state = "sent"
         self._pending_command = None
 
