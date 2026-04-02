@@ -10,6 +10,9 @@ from app.services.api_client import ApiClientError
 class RcController:
     """Tracks stick state and throttles rc command sends."""
 
+    MIN_SEND_INTERVAL_MS = 80
+    MAX_SEND_INTERVAL_MS = 250
+
     def __init__(
         self,
         api_client: ApiClient,
@@ -18,10 +21,13 @@ class RcController:
     ) -> None:
         self.api_client = api_client
         self.deadzone = max(0, int(deadzone))
-        self.send_interval_ms = max(1, int(send_interval_ms))
+        self.send_interval_ms = self._clamp_send_interval(send_interval_ms)
         self.current_state = RcState()
         self.last_sent_state: RcState | None = None
         self._last_sent_at = 0.0
+
+    def set_send_interval_ms(self, value: int) -> None:
+        self.send_interval_ms = self._clamp_send_interval(value)
 
     def set_left_stick(self, x: int, y: int) -> None:
         self.current_state.yaw = self._clamp(x)
@@ -71,3 +77,7 @@ class RcController:
     @staticmethod
     def _clamp(value: int) -> int:
         return max(-100, min(100, int(value)))
+
+    @classmethod
+    def _clamp_send_interval(cls, value: int) -> int:
+        return max(cls.MIN_SEND_INTERVAL_MS, min(cls.MAX_SEND_INTERVAL_MS, int(value)))

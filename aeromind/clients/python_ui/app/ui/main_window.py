@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
     def _apply_debug_defaults(self) -> None:
         self.app_state.gesture_enabled = self.app_controller.gesture_controller.is_enabled()
         self.app_controller.gesture_controller.reset()
+        self.flight_action_cluster.set_rc_interval_value(self.app_controller.rc_controller.send_interval_ms)
         self._sync_ui_from_state()
 
     def _wire_interactions(self) -> None:
@@ -173,6 +174,7 @@ class MainWindow(QMainWindow):
         self.flight_action_cluster.takeoffClicked.connect(self._on_takeoff_clicked)
         self.flight_action_cluster.landClicked.connect(self._on_land_clicked)
         self.flight_action_cluster.emergencyClicked.connect(self._on_emergency_clicked)
+        self.flight_action_cluster.rcIntervalChanged.connect(self._on_rc_interval_changed)
         self.gesture_debug_panel.gestureToggleClicked.connect(self._on_gesture_toggle_clicked)
 
         self.left_stick.valueChanged.connect(self._on_left_stick_changed)
@@ -197,6 +199,10 @@ class MainWindow(QMainWindow):
 
     def _on_emergency_clicked(self) -> None:
         self._call_api(self.app_controller.command_controller.emergency)
+
+    def _on_rc_interval_changed(self, value: int) -> None:
+        self.app_controller.rc_controller.set_send_interval_ms(value)
+        self.flight_action_cluster.set_rc_interval_value(self.app_controller.rc_controller.send_interval_ms)
 
     def _on_gesture_toggle_clicked(self) -> None:
         self.app_controller.gesture_controller.toggle()
