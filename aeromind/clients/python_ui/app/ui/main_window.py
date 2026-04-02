@@ -1,27 +1,21 @@
 from __future__ import annotations
 
-from time import time
-
-from PySide6.QtCore import QThread
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 
 from app.config import AppConfig
 from app.controllers.app_controller import AppController
 from app.models.app_state import AppState
-from app.services.api_client import ApiClientError
 from app.services.gesture_inference_service import GestureInferenceService
 from app.services.gesture_logger import GestureLogger
 from app.services.telemetry_service import TelemetryService
 from app.services.video_stream_service import VideoStreamService
 from app.ui.panels.gesture_debug_panel import GestureDebugPanel
 from app.ui.panels.hud_top_bar import HudTopBar
+from app.ui.runtime_coordinator import ClientRuntimeCoordinator
 from app.ui.panels.video_surface import VideoSurface
-from app.utils.logging_utils import gesture_debug_log
 from app.ui.widgets.flight_action_cluster import FlightActionCluster
 from app.ui.widgets.virtual_stick import VirtualStick
-from app.workers.status_worker import StatusWorker
-from app.workers.video_worker import VideoWorker
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +51,12 @@ class MainWindow(QMainWindow):
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
         self.gesture_inference_service = GestureInferenceService()
+        print(
+            f"[GESTUREDBG] mainwindow.gesture_service_created "
+            f"module={self.gesture_inference_service.__class__.__module__} "
+            f"detector_available={self.gesture_inference_service.is_detector_available()}",
+            flush=True,
+        )
         self.gesture_logger = GestureLogger()
         self.gesture_logger.set_session_context(
             participant_id="P001",
@@ -73,25 +73,16 @@ class MainWindow(QMainWindow):
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,
         )
-        self._last_motion_probe: dict[str, object] | None = None
-
-        self.status_thread = QThread(self)
-        self.status_worker = StatusWorker(self.app_controller.api_client, self.config.status_refresh_ms)
-        self.status_worker.moveToThread(self.status_thread)
-        self.status_thread.started.connect(self.status_worker.start)
-        self.status_worker.statusUpdated.connect(self._on_status_updated)
-        self.status_worker.statusError.connect(self._on_status_error)
-
-        self.video_thread = QThread(self)
-        self.video_worker = VideoWorker(
-            self.video_service,
-            self.config.video_url,
-            self.config.video_reconnect_delay_ms,
-            read_interval_ms=self.config.video_read_interval_ms,
-            drop_frames_on_reconnect=self.config.video_drop_frames_on_reconnect,
+        self.runtime = ClientRuntimeCoordinator(
+            parent=self,
+            config=self.config,
+            app_controller=self.app_controller,
+            app_state=self.app_state,
+            gesture_inference_service=self.gesture_inference_service,
+            gesture_logger=self.gesture_logger,
+            telemetry_service=self.telemetry_service,
+            video_service=self.video_service,
         )
-        self.video_worker.moveToThread(self.video_thread)
-        self.video_thread.started.connect(self.video_worker.start)
         self._connect_worker_signals()
 
         self._apply_hud_defaults()
@@ -100,13 +91,16 @@ class MainWindow(QMainWindow):
         self._register_label_shortcuts()
         self._layout_overlays()
 
-        self.status_thread.start()
-        self.video_thread.start()
+        self.runtime.start()
 
     def _connect_worker_signals(self) -> None:
-        self.video_worker.frameReady.connect(self.video_surface.set_video_pixmap)
-        self.video_worker.rawFrameReady.connect(self._on_raw_frame_ready)
-        self.video_worker.streamStatusChanged.connect(self._on_stream_status_changed)
+        self.runtime.connect_workers(
+            on_frame_ready=self.video_surface.set_video_pixmap,
+            on_raw_frame_ready=self._on_raw_frame_ready,
+            on_stream_status_changed=self._on_stream_status_changed,
+            on_status_updated=self._on_status_updated,
+            on_status_error=self._on_status_error,
+        )
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -119,8 +113,8 @@ class MainWindow(QMainWindow):
             return
 
         self._is_shutting_down = True
-        self._shutdown_workers()
-        self._reset_runtime_state()
+        self.runtime.stop()
+        self.runtime.reset_runtime_state()
         self.gesture_logger.close()
         self._sync_ui_from_state()
         event.accept()
@@ -250,22 +244,22 @@ class MainWindow(QMainWindow):
         )
 
     def _on_start_sim_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.start_sim)
+        self.runtime.call_api(self.app_controller.command_controller.start_sim, on_api_error=self._on_status_error)
 
     def _on_start_drone_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.start_drone)
+        self.runtime.call_api(self.app_controller.command_controller.start_drone, on_api_error=self._on_status_error)
 
     def _on_stop_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.stop)
+        self.runtime.call_api(self.app_controller.command_controller.stop, on_api_error=self._on_status_error)
 
     def _on_takeoff_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.takeoff)
+        self.runtime.call_api(self.app_controller.command_controller.takeoff, on_api_error=self._on_status_error)
 
     def _on_land_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.land)
+        self.runtime.call_api(self.app_controller.command_controller.land, on_api_error=self._on_status_error)
 
     def _on_emergency_clicked(self) -> None:
-        self._call_api(self.app_controller.command_controller.emergency)
+        self.runtime.call_api(self.app_controller.command_controller.emergency, on_api_error=self._on_status_error)
 
     def _on_rc_interval_changed(self, value: int) -> None:
         self.app_controller.rc_controller.set_send_interval_ms(value)
@@ -285,22 +279,38 @@ class MainWindow(QMainWindow):
         if self._is_shutting_down:
             return
         self.app_controller.rc_controller.set_left_stick(x_value, y_value)
-        self._call_api(lambda: self.app_controller.rc_controller.flush(), suppress_noop=True)
+        self.runtime.call_api(
+            lambda: self.app_controller.rc_controller.flush(),
+            on_api_error=self._on_status_error,
+            suppress_noop=True,
+        )
 
     def _on_right_stick_changed(self, x_value: int, y_value: int) -> None:
         if self._is_shutting_down:
             return
         self.app_controller.rc_controller.set_right_stick(x_value, y_value)
-        self._call_api(lambda: self.app_controller.rc_controller.flush(), suppress_noop=True)
+        self.runtime.call_api(
+            lambda: self.app_controller.rc_controller.flush(),
+            on_api_error=self._on_status_error,
+            suppress_noop=True,
+        )
 
     def _on_stick_released(self) -> None:
         if self._is_shutting_down:
             return
         state = self.app_controller.rc_controller.get_state()
         if state.is_neutral():
-            self._call_api(self.app_controller.rc_controller.reset, suppress_noop=True)
+            self.runtime.call_api(
+                self.app_controller.rc_controller.reset,
+                on_api_error=self._on_status_error,
+                suppress_noop=True,
+            )
             return
-        self._call_api(lambda: self.app_controller.rc_controller.flush(force=True), suppress_noop=True)
+        self.runtime.call_api(
+            lambda: self.app_controller.rc_controller.flush(force=True),
+            on_api_error=self._on_status_error,
+            suppress_noop=True,
+        )
 
     def _on_raw_frame_ready(self, frame: object) -> None:
         if self._is_shutting_down:
@@ -309,171 +319,20 @@ class MainWindow(QMainWindow):
         if not self.app_controller.gesture_controller.is_enabled():
             return
 
-        self._process_gesture_frame(frame)
-
-    def _process_gesture_frame(self, frame: object) -> None:
-        try:
-            result = self.gesture_inference_service.process_frame(frame)
-            debug_state = self.app_controller.gesture_controller.update_from_result(result)
-            frame_id = self.gesture_logger.next_frame_id()
-            stable_ms = self._as_int(debug_state.get("stable_ms"))
-            threshold = self._as_float(debug_state.get("threshold"))
-            gesture_debug_log(
-                "mainwindow.frame_processed",
-                frame_id=frame_id,
-                raw_gesture=result.raw_gesture,
-                stable_gesture=result.stable_gesture,
-                confidence=result.confidence,
-                resolved_command=result.command_name,
-                queue_state=debug_state.get("queue_state"),
-                detector_available=result.detector_available,
-            )
-            self.gesture_logger.log_gesture_event(
-                frame_id=frame_id,
-                gesture_true=self.gesture_logger.get_current_label(),
-                gesture_pred=result.raw_gesture,
-                stable_gesture=result.stable_gesture,
-                confidence=result.confidence,
-                stable_ms=stable_ms,
-                threshold=threshold,
-                drone_state=self._current_drone_state(),
-                battery_pct=self.app_state.battery_pct,
-                height_cm=self.app_state.height_cm,
-            )
-            self._sync_gesture_panel_from_state(debug_state)
-
-            command_name = result.command_name
-            if self.app_controller.gesture_controller.should_dispatch_command(command_name):
-                assert command_name is not None
-                command_ts = int(time() * 1000)
-                gesture_debug_log(
-                    "mainwindow.dispatch_attempt",
-                    frame_id=frame_id,
-                    raw_gesture=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    resolved_command=command_name,
-                    queue_state=self.app_controller.gesture_controller.get_debug_state().get("queue_state"),
-                    detector_available=result.detector_available,
-                )
-                dispatch_result = self._call_api(
-                    lambda: self.app_controller.command_controller.execute_gesture_command(command_name)
-                )
-                ack_ts = int(time() * 1000) if dispatch_result is not None else None
-                gesture_debug_log(
-                    "mainwindow.dispatch_result",
-                    frame_id=frame_id,
-                    raw_gesture=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    resolved_command=command_name,
-                    queue_state="dispatch_ok" if dispatch_result is not None else "dispatch_failed",
-                    detector_available=result.detector_available,
-                )
-                self.gesture_logger.log_command_event(
-                    event_type="command_dispatch",
-                    frame_id=frame_id,
-                    command_sent=command_name,
-                    command_block_reason="-",
-                    command_ts_ms=command_ts,
-                    ack_ts_ms=ack_ts,
-                    gesture_pred=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    stable_ms=stable_ms,
-                    threshold=threshold,
-                    drone_state=self._current_drone_state(),
-                    battery_pct=self.app_state.battery_pct,
-                    height_cm=self.app_state.height_cm,
-                )
-                if dispatch_result is not None:
-                    self._track_pending_motion(
-                        frame_id=frame_id,
-                        command_name=command_name,
-                        command_ts_ms=command_ts,
-                        ack_ts_ms=ack_ts,
-                    )
-                    self.app_controller.gesture_controller.mark_command_dispatched(command_name)
-                    self._sync_gesture_panel_from_state()
-            else:
-                block_reason = self.app_controller.gesture_controller.normalize_block_reason(command_name)
-                gesture_debug_log(
-                    "mainwindow.dispatch_blocked",
-                    frame_id=frame_id,
-                    raw_gesture=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    resolved_command=command_name,
-                    queue_state=block_reason,
-                    detector_available=result.detector_available,
-                )
-                self.gesture_logger.log_command_event(
-                    event_type="command_blocked",
-                    frame_id=frame_id,
-                    command_sent="-",
-                    command_block_reason=block_reason,
-                    gesture_pred=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    stable_ms=stable_ms,
-                    threshold=threshold,
-                    drone_state=self._current_drone_state(),
-                    battery_pct=self.app_state.battery_pct,
-                    height_cm=self.app_state.height_cm,
-                )
-        except ApiClientError as exc:
-            gesture_debug_log(
-                "mainwindow.api_error",
-                raw_gesture="-",
-                stable_gesture="-",
-                confidence="-",
-                resolved_command="-",
-                queue_state=str(exc),
-                detector_available=self.gesture_inference_service.is_detector_available(),
-            )
-            self._on_status_error(str(exc))
-        except Exception:
-            gesture_debug_log(
-                "mainwindow.processing_error",
-                raw_gesture="-",
-                stable_gesture="-",
-                confidence="-",
-                resolved_command="-",
-                queue_state="exception",
-                detector_available=self.gesture_inference_service.is_detector_available(),
-            )
-            self._sync_gesture_panel_from_state()
+        debug_state = self.runtime.process_gesture_frame(frame, on_api_error=self._on_status_error)
+        self._sync_gesture_panel_from_state(debug_state)
 
     def _on_status_updated(self, status_data: dict, state_data: object) -> None:
         if self._is_shutting_down:
             return
-        previous_mode = self.app_state.mode
-        previous_height = self.app_state.height_cm
-        telemetry = self.telemetry_service.build_telemetry(status_data, state_data)
-        self.app_state.mark_connected(telemetry.mode)
-        self.app_state.update_from_telemetry(telemetry)
-        self._maybe_log_motion_observed(previous_mode, previous_height)
+        self.runtime.apply_status_update(status_data, state_data)
         self._sync_ui_from_state()
 
     def _on_status_error(self, error_text: str) -> None:
         if self._is_shutting_down:
             return
-        self.app_state.mark_disconnected(error_text)
+        self.runtime.apply_status_error(error_text)
         self._sync_ui_from_state()
-
-    def _shutdown_workers(self) -> None:
-        self._safe_stop_worker(self.status_worker)
-        self._safe_quit_thread(self.status_thread, 1500)
-        self._safe_stop_worker(self.video_worker)
-        self._safe_quit_thread(self.video_thread, 2000)
-
-    def _reset_runtime_state(self) -> None:
-        self.gesture_inference_service.reset()
-        self.app_controller.gesture_controller.disable()
-        self.app_state.gesture_enabled = False
-        self.app_controller.rc_controller.reset()
-        self.video_service.close()
-        self.app_state.reset_runtime_state()
 
     def _sync_ui_from_state(self) -> None:
         self._sync_hud_from_app_state()
@@ -544,25 +403,8 @@ class MainWindow(QMainWindow):
     def _on_stream_status_changed(self, text: str) -> None:
         if self._is_shutting_down:
             return
-        self.app_state.set_stream_status(text)
+        self.runtime.apply_stream_status(text)
         self._sync_ui_from_state()
-
-    def _safe_stop_worker(self, worker: object | None) -> None:
-        if worker is None:
-            return
-        stop = getattr(worker, "stop", None)
-        if callable(stop):
-            try:
-                stop()
-            except RuntimeError:
-                pass
-
-    def _safe_quit_thread(self, thread: QThread | None, timeout_ms: int) -> None:
-        if thread is None:
-            return
-        if thread.isRunning():
-            thread.quit()
-            thread.wait(timeout_ms)
 
     @staticmethod
     def _safe_debug_text(value: object) -> str:
@@ -581,90 +423,3 @@ class MainWindow(QMainWindow):
         if text == "detector_unavailable":
             return "offline"
         return text
-
-    def _call_api(self, action, suppress_noop: bool = False):
-        try:
-            result = action()
-            if result is None and suppress_noop:
-                return
-            return result
-        except ApiClientError as exc:
-            self._on_status_error(str(exc))
-            return None
-
-    def _current_drone_state(self) -> str:
-        return self.app_state.mode if self.app_state.mode else "--"
-
-    def _track_pending_motion(
-        self,
-        *,
-        frame_id: int,
-        command_name: str,
-        command_ts_ms: int,
-        ack_ts_ms: int | None,
-    ) -> None:
-        self._last_motion_probe = {
-            "frame_id": frame_id,
-            "command_name": command_name,
-            "command_ts_ms": command_ts_ms,
-            "ack_ts_ms": ack_ts_ms,
-            "mode": self.app_state.mode,
-            "height_cm": self.app_state.height_cm,
-        }
-
-    def _maybe_log_motion_observed(self, previous_mode: str, previous_height: int | None) -> None:
-        probe = self._last_motion_probe
-        if probe is None:
-            return
-
-        command_name = str(probe["command_name"])
-        mode_changed = previous_mode != self.app_state.mode
-        height_changed = previous_height != self.app_state.height_cm
-
-        observed = False
-        if command_name in {"up", "down"} and height_changed:
-            observed = True
-        elif command_name in {"takeoff", "land"} and (height_changed or mode_changed):
-            observed = True
-        elif command_name in {"forward", "back", "left", "right", "clockwise", "counter_clockwise"} and mode_changed:
-            observed = True
-
-        if not observed:
-            return
-
-        motion_ts_ms = int(time() * 1000)
-        command_ts_ms = self._as_int(probe.get("command_ts_ms"))
-        e2e_latency_ms = None
-        if command_ts_ms is not None:
-            e2e_latency_ms = max(0, motion_ts_ms - command_ts_ms)
-
-        self.gesture_logger.log_motion_event(
-            frame_id=int(probe["frame_id"]),
-            command_sent=command_name,
-            drone_state=self._current_drone_state(),
-            battery_pct=self.app_state.battery_pct,
-            height_cm=self.app_state.height_cm,
-            command_ts_ms=command_ts_ms,
-            ack_ts_ms=self._as_int(probe.get("ack_ts_ms")),
-            drone_motion_ts_ms=motion_ts_ms,
-            e2e_latency_ms=e2e_latency_ms,
-        )
-        self._last_motion_probe = None
-
-    @staticmethod
-    def _as_int(value: object) -> int | None:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        return None
-
-    @staticmethod
-    def _as_float(value: object) -> float | None:
-        if isinstance(value, bool):
-            return float(value)
-        if isinstance(value, (int, float)):
-            return float(value)
-        return None

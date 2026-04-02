@@ -2,15 +2,40 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import sys
 from typing import Any, Deque
 
 import cv2
 from app.utils.logging_utils import gesture_debug_log
 
+_MEDIAPIPE_IMPORT_ERROR: Exception | None = None
+
 try:
     import mediapipe as mp
-except Exception:  # pragma: no cover - optional dependency
+except Exception as exc:  # pragma: no cover - optional dependency
     mp = None
+    _MEDIAPIPE_IMPORT_ERROR = exc
+
+if _MEDIAPIPE_IMPORT_ERROR is None:
+    gesture_debug_log("inference.mediapipe_import", success=True)
+    print("[GESTUREDBG] inference.mediapipe_import success=True", flush=True)
+else:
+    gesture_debug_log(
+        "inference.mediapipe_import",
+        success=False,
+        error=repr(_MEDIAPIPE_IMPORT_ERROR),
+    )
+    print(
+        f"[GESTUREDBG] inference.mediapipe_import success=False error={repr(_MEDIAPIPE_IMPORT_ERROR)}",
+        flush=True,
+    )
+
+gesture_debug_log(
+    "inference.module_loaded",
+    file=__file__,
+    module=__name__,
+    sys_path0=sys.path[0] if sys.path else "",
+)
 
 
 @dataclass(slots=True)
@@ -35,6 +60,7 @@ class GestureInferenceService:
         "thumbs_down": "down",
         "point_up": "forward",
     }
+    _INIT_LOGGED = False
 
     def __init__(
         self,
@@ -66,20 +92,47 @@ class GestureInferenceService:
         self._mp_hands = None
         self._hands = None
         self._detector_available = False
+        if not self.__class__._INIT_LOGGED:
+            gesture_debug_log(
+                "inference.instance_created",
+                file=__file__,
+                module=self.__class__.__module__,
+                class_id=id(self.__class__),
+                initialize_called=True,
+            )
+            print(
+                f"[GESTUREDBG] inference.instance_created file={__file__} "
+                f"module={self.__class__.__module__} class_id={id(self.__class__)} initialize_called=True",
+                flush=True,
+            )
+            self.__class__._INIT_LOGGED = True
         self._initialize_detector()
 
     def process_frame(self, frame: Any) -> GestureInferenceResult:
+        frame_shape = getattr(frame, "shape", None)
+        frame_dtype = getattr(frame, "dtype", None)
         if frame is None:
             gesture_debug_log(
                 "inference.empty_frame",
+                frame_is_none=True,
                 detector_available=self._detector_available,
                 queue_state="idle",
             )
             return self._empty_result("idle")
 
+        gesture_debug_log(
+            "inference.frame_received",
+            frame_is_none=False,
+            frame_shape=frame_shape,
+            frame_dtype=frame_dtype,
+            detector_available=self._detector_available,
+        )
+
         if not self._detector_available or self._hands is None:
             gesture_debug_log(
                 "inference.detector_unavailable",
+                frame_shape=frame_shape,
+                frame_dtype=frame_dtype,
                 detector_available=self._detector_available,
                 queue_state="detector_unavailable",
             )
@@ -87,16 +140,50 @@ class GestureInferenceService:
 
         try:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self._hands.process(rgb_frame)
-        except Exception:
+            gesture_debug_log(
+                "inference.cvtcolor_ok",
+                frame_shape=frame_shape,
+                frame_dtype=frame_dtype,
+            )
+        except Exception as exc:
             gesture_debug_log(
                 "inference.detector_error",
+                frame_shape=frame_shape,
+                frame_dtype=frame_dtype,
+                cvtcolor_ok=False,
+                error=repr(exc),
                 detector_available=self._detector_available,
-                queue_state="detector_unavailable",
+                queue_state="detector_error",
             )
-            return self._empty_result("detector_unavailable")
+            return self._empty_result("detector_error")
+
+        try:
+            results = self._hands.process(rgb_frame)
+            gesture_debug_log(
+                "inference.process_ok",
+                frame_shape=frame_shape,
+                frame_dtype=frame_dtype,
+                process_ok=True,
+            )
+        except Exception as exc:
+            gesture_debug_log(
+                "inference.detector_error",
+                frame_shape=frame_shape,
+                frame_dtype=frame_dtype,
+                process_ok=False,
+                error=repr(exc),
+                detector_available=self._detector_available,
+                queue_state="detector_error",
+            )
+            return self._empty_result("detector_error")
 
         hand_landmarks, handedness = self._extract_hand_landmarks(results)
+        gesture_debug_log(
+            "inference.landmarks_checked",
+            landmarks_found=hand_landmarks is not None,
+            handedness=handedness,
+            detector_available=self._detector_available,
+        )
         if hand_landmarks is None:
             self._history.append(None)
             gesture_debug_log(
@@ -197,8 +284,23 @@ class GestureInferenceService:
         }
 
     def _initialize_detector(self) -> None:
+        print(
+            f"[GESTUREDBG] entering _initialize_detector file={__file__} "
+            f"python={sys.executable} mediapipe={mp!r} version={getattr(mp, '__version__', None)!r}",
+            flush=True,
+        )
         if mp is None:
             self._detector_available = False
+            gesture_debug_log(
+                "inference.detector_init",
+                success=False,
+                error=repr(_MEDIAPIPE_IMPORT_ERROR),
+                detector_available=self._detector_available,
+            )
+            print(
+                f"[GESTUREDBG] inference.detector_init success=False error={repr(_MEDIAPIPE_IMPORT_ERROR)}",
+                flush=True,
+            )
             return
 
         try:
@@ -211,10 +313,33 @@ class GestureInferenceService:
                 min_tracking_confidence=0.5,
             )
             self._detector_available = True
-        except Exception:
+            gesture_debug_log(
+                "inference.detector_init",
+                success=True,
+                hands_created=self._hands is not None,
+                detector_available=self._detector_available,
+            )
+            print(
+                f"[GESTUREDBG] inference.detector_init success=True hands_created={self._hands is not None} "
+                f"detector_available={self._detector_available}",
+                flush=True,
+            )
+        except Exception as exc:
             self._mp_hands = None
             self._hands = None
             self._detector_available = False
+            gesture_debug_log(
+                "inference.detector_init",
+                success=False,
+                hands_created=False,
+                error=repr(exc),
+                detector_available=self._detector_available,
+            )
+            print(
+                f"[GESTUREDBG] inference.detector_init success=False error={repr(exc)} "
+                f"detector_available={self._detector_available}",
+                flush=True,
+            )
 
     def _empty_result(self, queue_state: str) -> GestureInferenceResult:
         return GestureInferenceResult(

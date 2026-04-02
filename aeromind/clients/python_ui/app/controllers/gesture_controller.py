@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from time import monotonic
 
 from app.services.gesture_inference_service import GestureInferenceResult, GestureInferenceService
 from app.utils.logging_utils import gesture_debug_log
+
+
+@dataclass(slots=True)
+class GestureDispatchDecision:
+    command_name: str | None
+    dispatch_allowed: bool
+    block_reason: str
+    debug_state: dict[str, str | float | bool | None]
 
 
 class GestureController:
@@ -129,6 +138,18 @@ class GestureController:
         )
         return self.get_debug_state()
 
+    def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
+        debug_state = self.update_from_result(result)
+        command_name = result.command_name
+        dispatch_allowed = self.should_dispatch_command(command_name)
+        block_reason = "-" if dispatch_allowed else self.normalize_block_reason(command_name)
+        return GestureDispatchDecision(
+            command_name=command_name,
+            dispatch_allowed=dispatch_allowed,
+            block_reason=block_reason,
+            debug_state=debug_state,
+        )
+
     def should_dispatch_command(self, command_name: str | None) -> bool:
         if not self._enabled or not self._detector_available or not command_name:
             blocked_state = (
@@ -246,6 +267,10 @@ class GestureController:
             queue_state=self._queue_state,
             detector_available=self._detector_available,
         )
+
+    def finalize_dispatch(self, command_name: str) -> dict[str, str | float | bool | None]:
+        self.mark_command_dispatched(command_name)
+        return self.get_debug_state()
 
     def get_stable_ms(self) -> int | None:
         if not self._last_stable_gesture_name or self._stable_since <= 0.0:
