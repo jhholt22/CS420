@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import requests
+from app.utils.logging_utils import gesture_debug_log
 
 
 class ApiClientError(RuntimeError):
@@ -31,6 +32,15 @@ class ApiClient:
         payload: dict[str, Any] = {"command": command}
         if args:
             payload["args"] = args
+        gesture_debug_log(
+            "api.send_command",
+            raw_gesture="-",
+            stable_gesture="-",
+            confidence="-",
+            resolved_command=command,
+            queue_state="dispatch_attempt",
+            detector_available="-",
+        )
         return self._request("POST", "/command", json=payload)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -56,6 +66,16 @@ class ApiClient:
 
         if not isinstance(data, dict):
             raise ApiClientError(f"{method} {path} returned unexpected data")
+        if method == "POST" and path == "/command":
+            gesture_debug_log(
+                "api.command_response",
+                raw_gesture="-",
+                stable_gesture="-",
+                confidence="-",
+                resolved_command=str(data.get("command", "-")),
+                queue_state="dispatch_ok",
+                detector_available="-",
+            )
         return data
 
     def _format_http_error(self, method: str, path: str, response: requests.Response | None) -> str:

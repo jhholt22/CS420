@@ -7,6 +7,8 @@ from time import time
 
 
 class GestureLogger:
+    _LOG_DIR = Path("data/logs")
+    _DEFAULT_FILENAME = "gesture_research_logs.csv"
     _FIELDS = [
         "run_id",
         "ts_ms",
@@ -45,7 +47,8 @@ class GestureLogger:
         self._notes = ""
         self._session_active = False
         root_path = Path(__file__).resolve().parents[4]
-        self._log_path = Path(log_path) if log_path is not None else root_path / "gesture_research_logs.csv"
+        default_log_path = root_path / self._LOG_DIR / self._DEFAULT_FILENAME
+        self._log_path = Path(log_path) if log_path is not None else default_log_path
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         file_exists = self._log_path.exists()
         self._file = self._log_path.open("a", newline="", encoding="utf-8")
@@ -84,6 +87,16 @@ class GestureLogger:
         if value is None:
             return ""
         return str(int(value))
+
+    @staticmethod
+    def _normalize_frame_id(value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            return str(int(value))
+        except (TypeError, ValueError):
+            text = str(value).strip()
+            return text
 
     def close(self) -> None:
         if getattr(self, "_file", None) is None:
@@ -302,7 +315,7 @@ class GestureLogger:
         self,
         *,
         event_type: str,
-        frame_id: int,
+        frame_id: int | None,
         gesture_true: str | None,
         gesture_pred: str | None,
         stable_gesture: str | None,
@@ -320,32 +333,31 @@ class GestureLogger:
         e2e_latency_ms: int | None,
         notes: str | None,
     ) -> None:
-        self._writer.writerow(
-            {
-                "run_id": self.run_id,
-                "ts_ms": self._now_ms(),
-                "event_type": self._normalize_text(event_type),
-                "frame_id": int(frame_id),
-                "participant_id": self._participant_id,
-                "lighting": self._lighting,
-                "background": self._background,
-                "distance_m": self._distance_m,
-                "gesture_true": self._normalize_text(gesture_true),
-                "gesture_pred": self._normalize_text(gesture_pred),
-                "stable_gesture": self._normalize_text(stable_gesture),
-                "confidence": self._normalize_float(confidence),
-                "stable_ms": self._normalize_int(stable_ms),
-                "threshold": self._normalize_float(threshold),
-                "command_sent": self._normalize_text(command_sent),
-                "command_block_reason": self._normalize_text(command_block_reason),
-                "drone_state": self._normalize_text(drone_state),
-                "battery_pct": self._normalize_int(battery_pct),
-                "height_cm": self._normalize_int(height_cm),
-                "command_ts_ms": self._normalize_int(command_ts_ms),
-                "ack_ts_ms": self._normalize_int(ack_ts_ms),
-                "drone_motion_ts_ms": self._normalize_int(drone_motion_ts_ms),
-                "e2e_latency_ms": self._normalize_int(e2e_latency_ms),
-                "notes": self._notes if notes is None else self._normalize_optional_text(notes),
-            }
-        )
+        row = {
+            "run_id": self._normalize_text(self.run_id, default=""),
+            "ts_ms": self._normalize_int(self._now_ms()),
+            "event_type": self._normalize_text(event_type),
+            "frame_id": self._normalize_frame_id(frame_id),
+            "participant_id": self._normalize_text(self._participant_id, default=""),
+            "lighting": self._normalize_text(self._lighting, default="unknown"),
+            "background": self._normalize_text(self._background, default="unknown"),
+            "distance_m": self._normalize_optional_text(self._distance_m),
+            "gesture_true": self._normalize_text(gesture_true),
+            "gesture_pred": self._normalize_text(gesture_pred),
+            "stable_gesture": self._normalize_text(stable_gesture),
+            "confidence": self._normalize_float(confidence),
+            "stable_ms": self._normalize_int(stable_ms),
+            "threshold": self._normalize_float(threshold),
+            "command_sent": self._normalize_text(command_sent),
+            "command_block_reason": self._normalize_text(command_block_reason),
+            "drone_state": self._normalize_text(drone_state),
+            "battery_pct": self._normalize_int(battery_pct),
+            "height_cm": self._normalize_int(height_cm),
+            "command_ts_ms": self._normalize_int(command_ts_ms),
+            "ack_ts_ms": self._normalize_int(ack_ts_ms),
+            "drone_motion_ts_ms": self._normalize_int(drone_motion_ts_ms),
+            "e2e_latency_ms": self._normalize_int(e2e_latency_ms),
+            "notes": self._notes if notes is None else self._normalize_optional_text(notes),
+        }
+        self._writer.writerow(row)
         self._file.flush()

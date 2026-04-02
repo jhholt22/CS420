@@ -1,0 +1,4 @@
+data/logs/
+gesture_research_logs.csv
+run_*.csv
+*.log

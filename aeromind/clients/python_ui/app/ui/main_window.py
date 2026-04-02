@@ -17,6 +17,7 @@ from app.services.video_stream_service import VideoStreamService
 from app.ui.panels.gesture_debug_panel import GestureDebugPanel
 from app.ui.panels.hud_top_bar import HudTopBar
 from app.ui.panels.video_surface import VideoSurface
+from app.utils.logging_utils import gesture_debug_log
 from app.ui.widgets.flight_action_cluster import FlightActionCluster
 from app.ui.widgets.virtual_stick import VirtualStick
 from app.workers.status_worker import StatusWorker
@@ -317,6 +318,16 @@ class MainWindow(QMainWindow):
             frame_id = self.gesture_logger.next_frame_id()
             stable_ms = self._as_int(debug_state.get("stable_ms"))
             threshold = self._as_float(debug_state.get("threshold"))
+            gesture_debug_log(
+                "mainwindow.frame_processed",
+                frame_id=frame_id,
+                raw_gesture=result.raw_gesture,
+                stable_gesture=result.stable_gesture,
+                confidence=result.confidence,
+                resolved_command=result.command_name,
+                queue_state=debug_state.get("queue_state"),
+                detector_available=result.detector_available,
+            )
             self.gesture_logger.log_gesture_event(
                 frame_id=frame_id,
                 gesture_true=self.gesture_logger.get_current_label(),
@@ -335,10 +346,30 @@ class MainWindow(QMainWindow):
             if self.app_controller.gesture_controller.should_dispatch_command(command_name):
                 assert command_name is not None
                 command_ts = int(time() * 1000)
+                gesture_debug_log(
+                    "mainwindow.dispatch_attempt",
+                    frame_id=frame_id,
+                    raw_gesture=result.raw_gesture,
+                    stable_gesture=result.stable_gesture,
+                    confidence=result.confidence,
+                    resolved_command=command_name,
+                    queue_state=self.app_controller.gesture_controller.get_debug_state().get("queue_state"),
+                    detector_available=result.detector_available,
+                )
                 dispatch_result = self._call_api(
                     lambda: self.app_controller.command_controller.execute_gesture_command(command_name)
                 )
                 ack_ts = int(time() * 1000) if dispatch_result is not None else None
+                gesture_debug_log(
+                    "mainwindow.dispatch_result",
+                    frame_id=frame_id,
+                    raw_gesture=result.raw_gesture,
+                    stable_gesture=result.stable_gesture,
+                    confidence=result.confidence,
+                    resolved_command=command_name,
+                    queue_state="dispatch_ok" if dispatch_result is not None else "dispatch_failed",
+                    detector_available=result.detector_available,
+                )
                 self.gesture_logger.log_command_event(
                     event_type="command_dispatch",
                     frame_id=frame_id,
@@ -366,6 +397,16 @@ class MainWindow(QMainWindow):
                     self._sync_gesture_panel_from_state()
             else:
                 block_reason = self.app_controller.gesture_controller.normalize_block_reason(command_name)
+                gesture_debug_log(
+                    "mainwindow.dispatch_blocked",
+                    frame_id=frame_id,
+                    raw_gesture=result.raw_gesture,
+                    stable_gesture=result.stable_gesture,
+                    confidence=result.confidence,
+                    resolved_command=command_name,
+                    queue_state=block_reason,
+                    detector_available=result.detector_available,
+                )
                 self.gesture_logger.log_command_event(
                     event_type="command_blocked",
                     frame_id=frame_id,
@@ -381,8 +422,26 @@ class MainWindow(QMainWindow):
                     height_cm=self.app_state.height_cm,
                 )
         except ApiClientError as exc:
+            gesture_debug_log(
+                "mainwindow.api_error",
+                raw_gesture="-",
+                stable_gesture="-",
+                confidence="-",
+                resolved_command="-",
+                queue_state=str(exc),
+                detector_available=self.gesture_inference_service.is_detector_available(),
+            )
             self._on_status_error(str(exc))
         except Exception:
+            gesture_debug_log(
+                "mainwindow.processing_error",
+                raw_gesture="-",
+                stable_gesture="-",
+                confidence="-",
+                resolved_command="-",
+                queue_state="exception",
+                detector_available=self.gesture_inference_service.is_detector_available(),
+            )
             self._sync_gesture_panel_from_state()
 
     def _on_status_updated(self, status_data: dict, state_data: object) -> None:

@@ -47,6 +47,9 @@ EXPECTED_COLUMNS = [
 def resolve_csv_path(argv: list[str]) -> Path:
     if len(argv) > 1 and argv[1].strip():
         return Path(argv[1]).expanduser().resolve()
+    preferred = Path("data/logs/gesture_research_logs.csv").resolve()
+    if preferred.exists():
+        return preferred
     return Path("gesture_research_logs.csv").resolve()
 
 
