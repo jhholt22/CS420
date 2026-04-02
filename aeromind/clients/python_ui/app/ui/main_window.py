@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from time import time
+
 from PySide6.QtCore import QThread
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 
 from app.config import AppConfig
@@ -8,6 +11,7 @@ from app.controllers.app_controller import AppController
 from app.models.app_state import AppState
 from app.services.api_client import ApiClientError
 from app.services.gesture_inference_service import GestureInferenceService
+from app.services.gesture_logger import GestureLogger
 from app.services.telemetry_service import TelemetryService
 from app.services.video_stream_service import VideoStreamService
 from app.ui.panels.gesture_debug_panel import GestureDebugPanel
@@ -52,6 +56,15 @@ class MainWindow(QMainWindow):
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
         self.gesture_inference_service = GestureInferenceService()
+        self.gesture_logger = GestureLogger()
+        self.gesture_logger.set_session_context(
+            participant_id="P001",
+            lighting="unknown",
+            background="unknown",
+            distance_m="",
+            notes="",
+        )
+        self.gesture_debug_panel.set_session_context(**self.gesture_logger.get_session_context())
         self.telemetry_service = TelemetryService()
         self.video_service = VideoStreamService(
             self.config.video_url,
@@ -59,6 +72,7 @@ class MainWindow(QMainWindow):
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,
         )
+        self._last_motion_probe: dict[str, object] | None = None
 
         self.status_thread = QThread(self)
         self.status_worker = StatusWorker(self.app_controller.api_client, self.config.status_refresh_ms)
@@ -82,6 +96,7 @@ class MainWindow(QMainWindow):
         self._apply_hud_defaults()
         self._apply_debug_defaults()
         self._wire_interactions()
+        self._register_label_shortcuts()
         self._layout_overlays()
 
         self.status_thread.start()
@@ -105,6 +120,7 @@ class MainWindow(QMainWindow):
         self._is_shutting_down = True
         self._shutdown_workers()
         self._reset_runtime_state()
+        self.gesture_logger.close()
         self._sync_ui_from_state()
         event.accept()
         super().closeEvent(event)
@@ -176,11 +192,61 @@ class MainWindow(QMainWindow):
         self.flight_action_cluster.emergencyClicked.connect(self._on_emergency_clicked)
         self.flight_action_cluster.rcIntervalChanged.connect(self._on_rc_interval_changed)
         self.gesture_debug_panel.gestureToggleClicked.connect(self._on_gesture_toggle_clicked)
+        self.gesture_debug_panel.sessionStartClicked.connect(self._on_start_session_clicked)
+        self.gesture_debug_panel.sessionEndClicked.connect(self._on_end_session_clicked)
+        self.gesture_debug_panel.clearLabelClicked.connect(self._on_clear_label_clicked)
 
         self.left_stick.valueChanged.connect(self._on_left_stick_changed)
         self.right_stick.valueChanged.connect(self._on_right_stick_changed)
         self.left_stick.stickReleased.connect(self._on_stick_released)
         self.right_stick.stickReleased.connect(self._on_stick_released)
+
+    def _register_label_shortcuts(self) -> None:
+        label_bindings = {
+            "0": "no_label",
+            "1": "open_palm",
+            "2": "fist",
+            "3": "thumbs_up",
+            "4": "thumbs_down",
+            "5": "point_up",
+        }
+        self._label_shortcuts: list[QShortcut] = []
+        for key, label in label_bindings.items():
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(lambda selected=label: self._set_current_gesture_label(selected))
+            self._label_shortcuts.append(shortcut)
+
+    def _set_current_gesture_label(self, label: str) -> None:
+        self.gesture_logger.set_current_label(label)
+        self.gesture_logger.log_label_change(notes=f"label={self.gesture_logger.get_current_label()}")
+        self._sync_gesture_panel_from_state()
+
+    def _on_clear_label_clicked(self) -> None:
+        self.gesture_logger.clear_current_label()
+        self.gesture_logger.log_label_change(notes="label_cleared")
+        self._sync_gesture_panel_from_state()
+
+    def _on_start_session_clicked(self) -> None:
+        self._apply_session_context_from_panel()
+        self.gesture_logger.start_session()
+        self.gesture_logger.log_session_event(event_type="session_start", notes="session_active")
+        self._sync_gesture_panel_from_state()
+
+    def _on_end_session_clicked(self) -> None:
+        self._apply_session_context_from_panel()
+        self.gesture_logger.log_session_event(event_type="session_end", notes="session_inactive")
+        self.gesture_logger.end_session()
+        self._sync_gesture_panel_from_state()
+
+    def _apply_session_context_from_panel(self) -> None:
+        context = self.gesture_debug_panel.get_session_context()
+        self.gesture_logger.set_session_context(
+            participant_id=context["participant_id"],
+            lighting=context["lighting"],
+            background=context["background"],
+            distance_m=context["distance_m"],
+            notes=context["notes"],
+        )
 
     def _on_start_sim_clicked(self) -> None:
         self._call_api(self.app_controller.command_controller.start_sim)
@@ -248,17 +314,72 @@ class MainWindow(QMainWindow):
         try:
             result = self.gesture_inference_service.process_frame(frame)
             debug_state = self.app_controller.gesture_controller.update_from_result(result)
+            frame_id = self.gesture_logger.next_frame_id()
+            stable_ms = self._as_int(debug_state.get("stable_ms"))
+            threshold = self._as_float(debug_state.get("threshold"))
+            self.gesture_logger.log_gesture_event(
+                frame_id=frame_id,
+                gesture_true=self.gesture_logger.get_current_label(),
+                gesture_pred=result.raw_gesture,
+                stable_gesture=result.stable_gesture,
+                confidence=result.confidence,
+                stable_ms=stable_ms,
+                threshold=threshold,
+                drone_state=self._current_drone_state(),
+                battery_pct=self.app_state.battery_pct,
+                height_cm=self.app_state.height_cm,
+            )
             self._sync_gesture_panel_from_state(debug_state)
 
             command_name = result.command_name
             if self.app_controller.gesture_controller.should_dispatch_command(command_name):
                 assert command_name is not None
+                command_ts = int(time() * 1000)
                 dispatch_result = self._call_api(
                     lambda: self.app_controller.command_controller.execute_gesture_command(command_name)
                 )
+                ack_ts = int(time() * 1000) if dispatch_result is not None else None
+                self.gesture_logger.log_command_event(
+                    event_type="command_dispatch",
+                    frame_id=frame_id,
+                    command_sent=command_name,
+                    command_block_reason="-",
+                    command_ts_ms=command_ts,
+                    ack_ts_ms=ack_ts,
+                    gesture_pred=result.raw_gesture,
+                    stable_gesture=result.stable_gesture,
+                    confidence=result.confidence,
+                    stable_ms=stable_ms,
+                    threshold=threshold,
+                    drone_state=self._current_drone_state(),
+                    battery_pct=self.app_state.battery_pct,
+                    height_cm=self.app_state.height_cm,
+                )
                 if dispatch_result is not None:
+                    self._track_pending_motion(
+                        frame_id=frame_id,
+                        command_name=command_name,
+                        command_ts_ms=command_ts,
+                        ack_ts_ms=ack_ts,
+                    )
                     self.app_controller.gesture_controller.mark_command_dispatched(command_name)
                     self._sync_gesture_panel_from_state()
+            else:
+                block_reason = self.app_controller.gesture_controller.normalize_block_reason(command_name)
+                self.gesture_logger.log_command_event(
+                    event_type="command_blocked",
+                    frame_id=frame_id,
+                    command_sent="-",
+                    command_block_reason=block_reason,
+                    gesture_pred=result.raw_gesture,
+                    stable_gesture=result.stable_gesture,
+                    confidence=result.confidence,
+                    stable_ms=stable_ms,
+                    threshold=threshold,
+                    drone_state=self._current_drone_state(),
+                    battery_pct=self.app_state.battery_pct,
+                    height_cm=self.app_state.height_cm,
+                )
         except ApiClientError as exc:
             self._on_status_error(str(exc))
         except Exception:
@@ -267,9 +388,12 @@ class MainWindow(QMainWindow):
     def _on_status_updated(self, status_data: dict, state_data: object) -> None:
         if self._is_shutting_down:
             return
+        previous_mode = self.app_state.mode
+        previous_height = self.app_state.height_cm
         telemetry = self.telemetry_service.build_telemetry(status_data, state_data)
         self.app_state.mark_connected(telemetry.mode)
         self.app_state.update_from_telemetry(telemetry)
+        self._maybe_log_motion_observed(previous_mode, previous_height)
         self._sync_ui_from_state()
 
     def _on_status_error(self, error_text: str) -> None:
@@ -346,7 +470,13 @@ class MainWindow(QMainWindow):
             f"Last Command: {self._safe_debug_text(state.get('last_command'))}"
         )
         queue_state = self._safe_queue_text(state.get("queue_state"))
-        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state}")
+        current_label = self._safe_debug_text(self.gesture_logger.get_current_label())
+        session_state = "ACTIVE" if self.gesture_logger.is_session_active() else "INACTIVE"
+        participant_id = self.gesture_logger.get_session_context()["participant_id"]
+        self.gesture_debug_panel.session_state_label.setText(
+            f"Session: {session_state} | Participant: {participant_id} | Label: {current_label}"
+        )
+        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state} | Label: {current_label}")
 
         button.style().unpolish(button)
         button.style().polish(button)
@@ -402,3 +532,80 @@ class MainWindow(QMainWindow):
         except ApiClientError as exc:
             self._on_status_error(str(exc))
             return None
+
+    def _current_drone_state(self) -> str:
+        return self.app_state.mode if self.app_state.mode else "--"
+
+    def _track_pending_motion(
+        self,
+        *,
+        frame_id: int,
+        command_name: str,
+        command_ts_ms: int,
+        ack_ts_ms: int | None,
+    ) -> None:
+        self._last_motion_probe = {
+            "frame_id": frame_id,
+            "command_name": command_name,
+            "command_ts_ms": command_ts_ms,
+            "ack_ts_ms": ack_ts_ms,
+            "mode": self.app_state.mode,
+            "height_cm": self.app_state.height_cm,
+        }
+
+    def _maybe_log_motion_observed(self, previous_mode: str, previous_height: int | None) -> None:
+        probe = self._last_motion_probe
+        if probe is None:
+            return
+
+        command_name = str(probe["command_name"])
+        mode_changed = previous_mode != self.app_state.mode
+        height_changed = previous_height != self.app_state.height_cm
+
+        observed = False
+        if command_name in {"up", "down"} and height_changed:
+            observed = True
+        elif command_name in {"takeoff", "land"} and (height_changed or mode_changed):
+            observed = True
+        elif command_name in {"forward", "back", "left", "right", "clockwise", "counter_clockwise"} and mode_changed:
+            observed = True
+
+        if not observed:
+            return
+
+        motion_ts_ms = int(time() * 1000)
+        command_ts_ms = self._as_int(probe.get("command_ts_ms"))
+        e2e_latency_ms = None
+        if command_ts_ms is not None:
+            e2e_latency_ms = max(0, motion_ts_ms - command_ts_ms)
+
+        self.gesture_logger.log_motion_event(
+            frame_id=int(probe["frame_id"]),
+            command_sent=command_name,
+            drone_state=self._current_drone_state(),
+            battery_pct=self.app_state.battery_pct,
+            height_cm=self.app_state.height_cm,
+            command_ts_ms=command_ts_ms,
+            ack_ts_ms=self._as_int(probe.get("ack_ts_ms")),
+            drone_motion_ts_ms=motion_ts_ms,
+            e2e_latency_ms=e2e_latency_ms,
+        )
+        self._last_motion_probe = None
+
+    @staticmethod
+    def _as_int(value: object) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return None
+
+    @staticmethod
+    def _as_float(value: object) -> float | None:
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None

@@ -1,1 +1,0 @@
-run_id,ts_ms,event_type,frame_id,participant_id,lighting,background,distance_m,gesture_true,gesture_pred,confidence,stable_ms,threshold,command_sent,command_block_reason,drone_state,battery_pct,height_cm,command_ts_ms,ack_ts_ms,drone_motion_ts_ms,e2e_latency_ms,notes

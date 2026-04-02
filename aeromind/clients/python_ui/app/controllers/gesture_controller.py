@@ -43,6 +43,7 @@ class GestureController:
         self._last_stable_gesture_name: str | None = None
         self._last_dispatched_command: str | None = None
         self._last_dispatched_at = 0.0
+        self._stable_since = 0.0
 
     def update_from_result(self, result: GestureInferenceResult) -> dict[str, str | float | bool | None]:
         if not self._enabled:
@@ -61,6 +62,7 @@ class GestureController:
             self._active_ready_command = None
             self._last_ready_command = None
             self._last_stable_gesture_name = None
+            self._stable_since = 0.0
             if self._queue_state == "idle":
                 self._queue_state = "detector_unavailable"
             return self.get_debug_state()
@@ -69,6 +71,7 @@ class GestureController:
         if current_stable_gesture is None or current_stable_gesture != self._last_stable_gesture_name:
             self._active_ready_command = None
             self._last_ready_command = None
+            self._stable_since = monotonic() if current_stable_gesture else 0.0
         self._last_stable_gesture_name = current_stable_gesture
 
         return self.get_debug_state()
@@ -105,6 +108,43 @@ class GestureController:
         self._queue_state = "sent"
         self._pending_command = None
 
+    def get_stable_ms(self) -> int | None:
+        if not self._last_stable_gesture_name or self._stable_since <= 0.0:
+            return None
+        return max(0, int((monotonic() - self._stable_since) * 1000.0))
+
+    def get_threshold_for_gesture(self, stable_gesture: str | None) -> float:
+        if stable_gesture in {"open_palm", "fist"}:
+            return 0.88
+        if stable_gesture in {"thumbs_up", "thumbs_down"}:
+            return 0.78
+        if stable_gesture == "point_up":
+            return 0.80
+        return 0.70
+
+    def normalize_block_reason(self, command_name: str | None) -> str:
+        if not self._enabled:
+            return "gesture_off"
+        if not self._detector_available:
+            return "detector_unavailable"
+        if not command_name:
+            normalized = self._normalize_queue_state(self._queue_state)
+            if normalized in {"dispatch", "sent"}:
+                return "no_command"
+            return normalized
+        return self._normalize_queue_state(self._queue_state)
+
+    @staticmethod
+    def _normalize_queue_state(queue_state: str | None) -> str:
+        text = (queue_state or "").strip().lower()
+        if not text:
+            return "no_command"
+        if text == "ready":
+            return "holding"
+        if text == "detecting":
+            return "no_command"
+        return text
+
     def get_debug_state(self) -> dict[str, str | float | bool | None]:
         return {
             "gesture": "ON" if self._enabled else "OFF",
@@ -115,4 +155,6 @@ class GestureController:
             "confidence": self._confidence,
             "pending_command": self._pending_command,
             "detector_available": self._detector_available,
+            "stable_ms": self.get_stable_ms(),
+            "threshold": self.get_threshold_for_gesture(self._last_stable_gesture_name),
         }
