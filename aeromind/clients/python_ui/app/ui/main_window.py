@@ -8,6 +8,7 @@ from app.controllers.app_controller import AppController
 from app.models.app_state import AppState
 from app.services.gesture_inference_service import GestureInferenceService
 from app.services.gesture_logger import GestureLogger
+from app.services.startup_smoke_check import StartupSmokeCheckService
 from app.services.telemetry_service import TelemetryService
 from app.services.video_stream_service import VideoStreamService
 from app.ui.panels.gesture_debug_panel import GestureDebugPanel
@@ -16,6 +17,7 @@ from app.ui.runtime_coordinator import ClientRuntimeCoordinator
 from app.ui.panels.video_surface import VideoSurface
 from app.ui.widgets.flight_action_cluster import FlightActionCluster
 from app.ui.widgets.virtual_stick import VirtualStick
+from app.utils.logging_utils import gesture_debug_log
 
 
 class MainWindow(QMainWindow):
@@ -51,12 +53,6 @@ class MainWindow(QMainWindow):
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
         self.gesture_inference_service = GestureInferenceService()
-        print(
-            f"[GESTUREDBG] mainwindow.gesture_service_created "
-            f"module={self.gesture_inference_service.__class__.__module__} "
-            f"detector_available={self.gesture_inference_service.is_detector_available()}",
-            flush=True,
-        )
         self.gesture_logger = GestureLogger()
         self.gesture_logger.set_session_context(
             participant_id="P001",
@@ -72,6 +68,12 @@ class MainWindow(QMainWindow):
             prefer_ffmpeg=self.config.video_backend_prefer_ffmpeg,
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,
+        )
+        self.startup_smoke_check = StartupSmokeCheckService(
+            config=self.config,
+            api_client=self.app_controller.api_client,
+            gesture_inference_service=self.gesture_inference_service,
+            video_stream_service=self.video_service,
         )
         self.runtime = ClientRuntimeCoordinator(
             parent=self,
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
         self._wire_interactions()
         self._register_label_shortcuts()
         self._layout_overlays()
+        self._run_startup_smoke_check()
 
         self.runtime.start()
 
@@ -113,10 +116,12 @@ class MainWindow(QMainWindow):
             return
 
         self._is_shutting_down = True
+        gesture_debug_log("thread.window_close_started")
         self.runtime.stop()
         self.runtime.reset_runtime_state()
         self.gesture_logger.close()
         self._sync_ui_from_state()
+        gesture_debug_log("thread.window_close_completed")
         event.accept()
         super().closeEvent(event)
 
@@ -167,9 +172,14 @@ class MainWindow(QMainWindow):
     def _apply_hud_defaults(self) -> None:
         self.app_state.connected = False
         self.app_state.mode = "--"
-        self.app_state.battery_pct = 85
-        self.app_state.height_cm = 0
+        self.app_state.battery_pct = None
+        self.app_state.height_cm = None
         self.app_state.set_stream_status("No Signal")
+        self._sync_ui_from_state()
+
+    def _run_startup_smoke_check(self) -> None:
+        summary = self.startup_smoke_check.run()
+        self.app_state.set_startup_summary(summary)
         self._sync_ui_from_state()
 
     def _apply_debug_defaults(self) -> None:
@@ -322,10 +332,10 @@ class MainWindow(QMainWindow):
         debug_state = self.runtime.process_gesture_frame(frame, on_api_error=self._on_status_error)
         self._sync_gesture_panel_from_state(debug_state)
 
-    def _on_status_updated(self, status_data: dict, state_data: object) -> None:
+    def _on_status_updated(self, status_data: dict, state_data: object, diag_data: dict) -> None:
         if self._is_shutting_down:
             return
-        self.runtime.apply_status_update(status_data, state_data)
+        self.runtime.apply_status_update(status_data, state_data, diag_data)
         self._sync_ui_from_state()
 
     def _on_status_error(self, error_text: str) -> None:
@@ -340,9 +350,21 @@ class MainWindow(QMainWindow):
         self.video_surface.set_stream_status(self.app_state.stream_status)
 
     def _sync_hud_from_app_state(self) -> None:
-        connection_text = "Connected" if self.app_state.connected else "Offline"
-        self.hud_top_bar.connection_label.setText(f"Connection: {connection_text}")
-        self.hud_top_bar.mode_label.setText(f"Mode: {self.app_state.mode}")
+        health = self.app_state.health
+        drone_text = "Connected" if health.drone_connected else "Offline"
+        sdk_text = "Ready" if health.sdk_mode_ready else "Unavailable"
+        video_text = self.app_state.stream_status
+        detector_text = "Ready" if health.detector_ready else (health.detector_error_reason or "Unavailable")
+        command_text = health.last_command_status.upper()
+        startup_text = (self.app_state.startup_summary.overall_status if self.app_state.startup_summary else "pending").upper()
+
+        self.hud_top_bar.connection_label.setText(f"Drone: {drone_text}")
+        self.hud_top_bar.sdk_label.setText(f"SDK: {sdk_text}")
+        self.hud_top_bar.video_label.setText(f"Video: {video_text}")
+        self.hud_top_bar.command_label.setText(f"Command: {command_text}")
+        self.hud_top_bar.startup_label.setText(f"Startup: {startup_text}")
+        self.hud_top_bar.detector_label.setText(f"Detector: {self._compact_health_text(detector_text)}")
+        self.hud_top_bar.mode_label.setText(f"Mode: {health.current_mode}")
         self.hud_top_bar.battery_label.setText(
             f"Battery: {self.app_state.battery_pct}%"
             if self.app_state.battery_pct is not None
@@ -369,13 +391,26 @@ class MainWindow(QMainWindow):
             button.setProperty("state", "off")
 
         detector_available_state = state.get("detector_available")
+        detector_status_state = state.get("detector_status")
         if self.app_state.gesture_enabled and isinstance(detector_available_state, bool):
             detector_available = detector_available_state
         else:
             detector_available = self.gesture_inference_service.is_detector_available()
+        if self.app_state.gesture_enabled and isinstance(detector_status_state, str):
+            detector_status = detector_status_state
+        else:
+            detector_status = self.gesture_inference_service.get_detector_status()
+        detector_error = state.get("detector_error")
+        if not isinstance(detector_error, str):
+            detector_error = self.gesture_inference_service.get_detector_error()
+        if not self._is_shutting_down:
+            self.app_state.set_detector_state(
+                ready=detector_status == "detector_ready",
+                error_reason=None if detector_status == "detector_ready" else detector_error,
+            )
         self.gesture_debug_panel.gesture_label.setText(f"Gesture: {state['gesture']}")
         self.gesture_debug_panel.detector_label.setText(
-            "Detector: READY" if detector_available else "Detector: OFFLINE"
+            f"Detector: {self._format_detector_status(detector_status, detector_available)}"
         )
         self.gesture_debug_panel.raw_label.setText(f"Raw: {self._safe_debug_text(state.get('raw'))}")
         self.gesture_debug_panel.stable_label.setText(f"Stable: {self._safe_debug_text(state.get('stable'))}")
@@ -385,7 +420,7 @@ class MainWindow(QMainWindow):
             f"Confidence: {confidence:.2f}" if isinstance(confidence, float) else "Confidence: --"
         )
         self.gesture_debug_panel.last_command_label.setText(
-            f"Last Command: {self._safe_debug_text(state.get('last_command'))}"
+            f"Last Command: {self._safe_debug_text(self.app_state.health.last_command_status)}"
         )
         queue_state = self._safe_queue_text(state.get("queue_state"))
         current_label = self._safe_debug_text(self.gesture_logger.get_current_label())
@@ -420,6 +455,21 @@ class MainWindow(QMainWindow):
         text = MainWindow._safe_debug_text(value)
         if text == "--":
             return "idle"
-        if text == "detector_unavailable":
-            return "offline"
+        if text in {"detector_unavailable", "detector_missing_dependency", "detector_init_failed"}:
+            return text
         return text
+
+    @staticmethod
+    def _format_detector_status(status: str, detector_available: bool) -> str:
+        if detector_available or status == "detector_ready":
+            return "READY"
+        if status == "detector_missing_dependency":
+            return "MISSING DEPENDENCY"
+        if status == "detector_init_failed":
+            return "INIT FAILED"
+        return "UNAVAILABLE"
+
+    @staticmethod
+    def _compact_health_text(text: str) -> str:
+        value = MainWindow._safe_debug_text(text)
+        return value[:28]

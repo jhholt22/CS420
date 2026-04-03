@@ -15,9 +15,17 @@ class HudTopBar(QWidget):
 
         left_group = QHBoxLayout()
         left_group.setSpacing(6)
-        self.connection_label = self._make_chip("Connection: Offline")
+        self.connection_label = self._make_chip("Drone: Offline")
+        self.sdk_label = self._make_chip("SDK: Unavailable")
+        self.video_label = self._make_chip("Video: Offline")
+        self.command_label = self._make_chip("Command: Idle")
+        self.startup_label = self._make_chip("Startup: Pending")
         self.battery_label = self._make_chip("Battery: --")
         left_group.addWidget(self.connection_label)
+        left_group.addWidget(self.sdk_label)
+        left_group.addWidget(self.video_label)
+        left_group.addWidget(self.command_label)
+        left_group.addWidget(self.startup_label)
         left_group.addWidget(self.battery_label)
 
         self.title_label = QLabel("AeroMind", self)
@@ -26,8 +34,10 @@ class HudTopBar(QWidget):
 
         right_group = QHBoxLayout()
         right_group.setSpacing(6)
+        self.detector_label = self._make_chip("Detector: Unavailable")
         self.mode_label = self._make_chip("Mode: --")
         self.altitude_label = self._make_chip("Height: --")
+        right_group.addWidget(self.detector_label)
         right_group.addWidget(self.mode_label)
         right_group.addWidget(self.altitude_label)
 

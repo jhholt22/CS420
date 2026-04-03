@@ -8,12 +8,15 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage, QPixmap
 
 from app.services.video_stream_service import VideoStreamService
+from app.utils.logging_utils import gesture_debug_log
 
 
 class VideoWorker(QObject):
     frameReady = Signal(QPixmap)
     rawFrameReady = Signal(object)
     streamStatusChanged = Signal(str)
+    workerStarted = Signal()
+    workerFinished = Signal()
 
     def __init__(
         self,
@@ -35,28 +38,36 @@ class VideoWorker(QObject):
 
     def start(self) -> None:
         if self._running:
+            gesture_debug_log("thread.worker_start_skipped", worker="video", reason="already_running")
             return
 
         self._running = True
+        gesture_debug_log("thread.worker_started", worker="video")
+        self.workerStarted.emit()
         self._emit_status("Connecting")
 
-        while self._running:
-            if not self._open_stream():
-                self._handle_stream_failure()
-                continue
+        try:
+            while self._running:
+                if not self._open_stream():
+                    self._handle_stream_failure()
+                    continue
 
-            self._drop_initial_frames()
-            if not self._running:
-                break
-            self._emit_status("Live")
+                self._drop_initial_frames()
+                if not self._running:
+                    break
+                self._emit_status("Live")
 
-            if not self._read_stream_loop():
-                self._handle_stream_failure()
-
-        self.video_service.close()
-        self._emit_status("Stopped")
+                if not self._read_stream_loop():
+                    self._handle_stream_failure()
+        finally:
+            self.video_service.close()
+            self._emit_status("Stopped")
+            self._running = False
+            gesture_debug_log("thread.worker_finished", worker="video")
+            self.workerFinished.emit()
 
     def stop(self) -> None:
+        gesture_debug_log("thread.worker_stop_requested", worker="video", running=self._running)
         if not self._running:
             self.video_service.close()
             self._emit_status("Stopped")
@@ -69,7 +80,12 @@ class VideoWorker(QObject):
     def _open_stream(self) -> bool:
         try:
             return self.video_service.open_stream(self.stream_url)
-        except Exception:
+        except cv2.error as exc:
+            gesture_debug_log("thread.worker_error", worker="video", stage="open_stream", error=repr(exc))
+            self.video_service.close()
+            return False
+        except RuntimeError as exc:
+            gesture_debug_log("thread.worker_error", worker="video", stage="open_stream", error=repr(exc))
             self.video_service.close()
             return False
 
@@ -88,10 +104,7 @@ class VideoWorker(QObject):
             if frame is None:
                 return False
 
-            try:
-                self.rawFrameReady.emit(frame.copy())
-            except Exception:
-                pass
+            self.rawFrameReady.emit(frame.copy())
 
             if not self._running:
                 return True
@@ -128,7 +141,7 @@ class VideoWorker(QObject):
                 QImage.Format_RGB888,
             ).copy()
             return QPixmap.fromImage(image)
-        except Exception:
+        except (cv2.error, RuntimeError, ValueError):
             return QPixmap()
 
     def _emit_status(self, text: str) -> None:

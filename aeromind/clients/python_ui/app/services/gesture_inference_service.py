@@ -2,11 +2,27 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 import sys
-from typing import Any, Deque
+from typing import Any, Deque, Literal
 
 import cv2
 from app.utils.logging_utils import gesture_debug_log
+
+
+DetectorStatus = Literal[
+    "detector_ready",
+    "detector_missing_dependency",
+    "detector_init_failed",
+    "detector_unavailable",
+]
+
+
+def _format_exception(exc: Exception | None) -> str | None:
+    if exc is None:
+        return None
+    return f"{type(exc).__name__}: {exc}"
+
 
 _MEDIAPIPE_IMPORT_ERROR: Exception | None = None
 
@@ -16,20 +32,11 @@ except Exception as exc:  # pragma: no cover - optional dependency
     mp = None
     _MEDIAPIPE_IMPORT_ERROR = exc
 
-if _MEDIAPIPE_IMPORT_ERROR is None:
-    gesture_debug_log("inference.mediapipe_import", success=True)
-    print("[GESTUREDBG] inference.mediapipe_import success=True", flush=True)
-else:
-    gesture_debug_log(
-        "inference.mediapipe_import",
-        success=False,
-        error=repr(_MEDIAPIPE_IMPORT_ERROR),
-    )
-    print(
-        f"[GESTUREDBG] inference.mediapipe_import success=False error={repr(_MEDIAPIPE_IMPORT_ERROR)}",
-        flush=True,
-    )
-
+gesture_debug_log(
+    "inference.mediapipe_import",
+    success=_MEDIAPIPE_IMPORT_ERROR is None,
+    error=_format_exception(_MEDIAPIPE_IMPORT_ERROR),
+)
 gesture_debug_log(
     "inference.module_loaded",
     file=__file__,
@@ -46,6 +53,9 @@ class GestureInferenceResult:
     command_name: str | None
     queue_state: str
     detector_available: bool
+    detector_status: DetectorStatus
+    detector_error: str | None
+    detector_model_path: str | None
 
 
 class GestureInferenceService:
@@ -89,9 +99,14 @@ class GestureInferenceService:
             "thumbs_down": {"min_confidence": 0.84, "required_hits": self.dominance_frames},
             "point_up": {"min_confidence": 0.86, "required_hits": self.dominance_frames},
         }
-        self._mp_hands = None
-        self._hands = None
+        self._detector: Any | None = None
         self._detector_available = False
+        self._detector_status: DetectorStatus = "detector_unavailable"
+        self._detector_error: str | None = None
+        self._model_path = self._resolve_model_path()
+        self._init_attempted = False
+        self._detector_unavailable_logged = False
+
         if not self.__class__._INIT_LOGGED:
             gesture_debug_log(
                 "inference.instance_created",
@@ -100,13 +115,9 @@ class GestureInferenceService:
                 class_id=id(self.__class__),
                 initialize_called=True,
             )
-            print(
-                f"[GESTUREDBG] inference.instance_created file={__file__} "
-                f"module={self.__class__.__module__} class_id={id(self.__class__)} initialize_called=True",
-                flush=True,
-            )
             self.__class__._INIT_LOGGED = True
-        self._initialize_detector()
+
+        self.ensure_detector_initialized(reason="startup")
 
     def process_frame(self, frame: Any) -> GestureInferenceResult:
         frame_shape = getattr(frame, "shape", None)
@@ -116,27 +127,24 @@ class GestureInferenceService:
                 "inference.empty_frame",
                 frame_is_none=True,
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
                 queue_state="idle",
             )
             return self._empty_result("idle")
 
+        self.ensure_detector_initialized(reason="first_frame")
         gesture_debug_log(
             "inference.frame_received",
             frame_is_none=False,
             frame_shape=frame_shape,
             frame_dtype=frame_dtype,
             detector_available=self._detector_available,
+            detector_status=self._detector_status,
         )
 
-        if not self._detector_available or self._hands is None:
-            gesture_debug_log(
-                "inference.detector_unavailable",
-                frame_shape=frame_shape,
-                frame_dtype=frame_dtype,
-                detector_available=self._detector_available,
-                queue_state="detector_unavailable",
-            )
-            return self._empty_result("detector_unavailable")
+        if not self._detector_available or self._detector is None:
+            self._log_detector_unavailable_once(frame_shape=frame_shape, frame_dtype=frame_dtype)
+            return self._empty_result(self._detector_status)
 
         try:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -151,14 +159,16 @@ class GestureInferenceService:
                 frame_shape=frame_shape,
                 frame_dtype=frame_dtype,
                 cvtcolor_ok=False,
-                error=repr(exc),
+                error=_format_exception(exc),
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
                 queue_state="detector_error",
             )
             return self._empty_result("detector_error")
 
         try:
-            results = self._hands.process(rgb_frame)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            results = self._detector.detect(mp_image)
             gesture_debug_log(
                 "inference.process_ok",
                 frame_shape=frame_shape,
@@ -171,8 +181,9 @@ class GestureInferenceService:
                 frame_shape=frame_shape,
                 frame_dtype=frame_dtype,
                 process_ok=False,
-                error=repr(exc),
+                error=_format_exception(exc),
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
                 queue_state="detector_error",
             )
             return self._empty_result("detector_error")
@@ -183,6 +194,7 @@ class GestureInferenceService:
             landmarks_found=hand_landmarks is not None,
             handedness=handedness,
             detector_available=self._detector_available,
+            detector_status=self._detector_status,
         )
         if hand_landmarks is None:
             self._history.append(None)
@@ -194,6 +206,7 @@ class GestureInferenceService:
                 resolved_command="-",
                 queue_state="detecting",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
             )
             return GestureInferenceResult(
                 raw_gesture=None,
@@ -202,6 +215,9 @@ class GestureInferenceService:
                 command_name=None,
                 queue_state="detecting",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
+                detector_error=self._detector_error,
+                detector_model_path=self._model_path,
             )
 
         raw_gesture, confidence = self._classify_landmarks(hand_landmarks, handedness)
@@ -216,6 +232,7 @@ class GestureInferenceService:
                 resolved_command="-",
                 queue_state="detecting",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
             )
             return GestureInferenceResult(
                 raw_gesture=None,
@@ -224,6 +241,9 @@ class GestureInferenceService:
                 command_name=None,
                 queue_state="detecting",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
+                detector_error=self._detector_error,
+                detector_model_path=self._model_path,
             )
 
         if confidence is None or confidence < self.noise_confidence_floor:
@@ -237,6 +257,7 @@ class GestureInferenceService:
                 resolved_command="-",
                 queue_state="low_confidence",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
             )
             return GestureInferenceResult(
                 raw_gesture=raw_gesture,
@@ -245,6 +266,9 @@ class GestureInferenceService:
                 command_name=None,
                 queue_state="low_confidence",
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
+                detector_error=self._detector_error,
+                detector_model_path=self._model_path,
             )
 
         self._history.append(raw_gesture)
@@ -259,6 +283,7 @@ class GestureInferenceService:
             queue_state=queue_state,
             stable_hits=stable_hits,
             detector_available=self._detector_available,
+            detector_status=self._detector_status,
         )
 
         return GestureInferenceResult(
@@ -268,13 +293,28 @@ class GestureInferenceService:
             command_name=command_name,
             queue_state=queue_state,
             detector_available=self._detector_available,
+            detector_status=self._detector_status,
+            detector_error=self._detector_error,
+            detector_model_path=self._model_path,
         )
 
     def reset(self) -> None:
         self._history.clear()
 
     def is_detector_available(self) -> bool:
+        self.ensure_detector_initialized(reason="status_check")
         return self._detector_available
+
+    def get_detector_status(self) -> DetectorStatus:
+        self.ensure_detector_initialized(reason="status_check")
+        return self._detector_status
+
+    def get_detector_error(self) -> str | None:
+        self.ensure_detector_initialized(reason="status_check")
+        return self._detector_error
+
+    def get_model_path(self) -> str | None:
+        return self._model_path
 
     def get_enabled_gesture_commands(self) -> dict[str, str]:
         return {
@@ -283,62 +323,89 @@ class GestureInferenceService:
             if gesture_name in self._enabled_gesture_commands
         }
 
-    def _initialize_detector(self) -> None:
-        print(
-            f"[GESTUREDBG] entering _initialize_detector file={__file__} "
-            f"python={sys.executable} mediapipe={mp!r} version={getattr(mp, '__version__', None)!r}",
-            flush=True,
+    def ensure_detector_initialized(self, *, reason: str) -> bool:
+        if self._init_attempted:
+            return self._detector_available
+        self._init_attempted = True
+        self._initialize_detector(reason=reason)
+        return self._detector_available
+
+    def _initialize_detector(self, *, reason: str) -> None:
+        gesture_debug_log(
+            "inference.detector_init_start",
+            reason=reason,
+            python=sys.executable,
+            mediapipe_imported=mp is not None,
+            mediapipe_version=getattr(mp, "__version__", None),
+            model_path=self._model_path,
         )
+
         if mp is None:
-            self._detector_available = False
-            gesture_debug_log(
-                "inference.detector_init",
-                success=False,
-                error=repr(_MEDIAPIPE_IMPORT_ERROR),
-                detector_available=self._detector_available,
-            )
-            print(
-                f"[GESTUREDBG] inference.detector_init success=False error={repr(_MEDIAPIPE_IMPORT_ERROR)}",
-                flush=True,
+            self._set_detector_failure(
+                status="detector_missing_dependency",
+                error=_format_exception(_MEDIAPIPE_IMPORT_ERROR) or "MediaPipe import failed",
+                dependencies_available=False,
             )
             return
 
         try:
-            self._mp_hands = mp.solutions.hands
-            self._hands = self._mp_hands.Hands(
-                static_image_mode=False,
-                max_num_hands=self.max_num_hands,
-                model_complexity=0,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-            )
-            self._detector_available = True
-            gesture_debug_log(
-                "inference.detector_init",
-                success=True,
-                hands_created=self._hands is not None,
-                detector_available=self._detector_available,
-            )
-            print(
-                f"[GESTUREDBG] inference.detector_init success=True hands_created={self._hands is not None} "
-                f"detector_available={self._detector_available}",
-                flush=True,
+            from mediapipe.tasks.python.core.base_options import BaseOptions
+            from mediapipe.tasks.python.vision import (
+                HandLandmarker,
+                HandLandmarkerOptions,
+                RunningMode,
             )
         except Exception as exc:
-            self._mp_hands = None
-            self._hands = None
-            self._detector_available = False
-            gesture_debug_log(
-                "inference.detector_init",
-                success=False,
-                hands_created=False,
-                error=repr(exc),
-                detector_available=self._detector_available,
+            self._set_detector_failure(
+                status="detector_missing_dependency",
+                error=_format_exception(exc) or "MediaPipe Tasks API import failed",
+                dependencies_available=False,
             )
-            print(
-                f"[GESTUREDBG] inference.detector_init success=False error={repr(exc)} "
-                f"detector_available={self._detector_available}",
-                flush=True,
+            return
+
+        if self._model_path is None:
+            self._set_detector_failure(
+                status="detector_init_failed",
+                error="Gesture detector model path could not be resolved",
+                dependencies_available=True,
+            )
+            return
+
+        model_path = Path(self._model_path)
+        if not model_path.is_file():
+            self._set_detector_failure(
+                status="detector_init_failed",
+                error=f"Model file not found: {model_path}",
+                dependencies_available=True,
+            )
+            return
+
+        try:
+            options = HandLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=str(model_path)),
+                running_mode=RunningMode.IMAGE,
+                num_hands=self.max_num_hands,
+                min_hand_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+                min_hand_presence_confidence=0.5,
+            )
+            self._detector = HandLandmarker.create_from_options(options)
+            self._detector_available = True
+            self._detector_status = "detector_ready"
+            self._detector_error = None
+            gesture_debug_log(
+                "inference.detector_init_success",
+                detector_available=self._detector_available,
+                detector_status=self._detector_status,
+                dependencies_available=True,
+                model_path=self._model_path,
+                detector_type=type(self._detector).__name__,
+            )
+        except Exception as exc:
+            self._set_detector_failure(
+                status="detector_init_failed",
+                error=_format_exception(exc) or "HandLandmarker creation failed",
+                dependencies_available=True,
             )
 
     def _empty_result(self, queue_state: str) -> GestureInferenceResult:
@@ -349,33 +416,48 @@ class GestureInferenceService:
             command_name=None,
             queue_state=queue_state,
             detector_available=self._detector_available,
+            detector_status=self._detector_status,
+            detector_error=self._detector_error,
+            detector_model_path=self._model_path,
         )
 
     def _extract_hand_landmarks(self, results: Any) -> tuple[Any | None, str | None]:
         if results is None:
             return None, None
 
-        multi_hand_landmarks = getattr(results, "multi_hand_landmarks", None)
-        if not multi_hand_landmarks:
+        hand_landmarks = getattr(results, "hand_landmarks", None)
+        if not hand_landmarks:
             return None, None
 
         handedness_label: str | None = None
-        multi_handedness = getattr(results, "multi_handedness", None)
-        if multi_handedness:
+        handedness_groups = getattr(results, "handedness", None)
+        if handedness_groups:
             try:
-                handedness_label = multi_handedness[0].classification[0].label
+                first_group = handedness_groups[0]
+                if first_group:
+                    first_category = first_group[0]
+                    handedness_label = (
+                        getattr(first_category, "category_name", None)
+                        or getattr(first_category, "display_name", None)
+                    )
             except Exception:
                 handedness_label = None
 
-        return multi_hand_landmarks[0], handedness_label
+        return hand_landmarks[0], handedness_label
 
     def _classify_landmarks(self, landmarks: Any, handedness: str | None) -> tuple[str | None, float | None]:
-        finger_states = self._finger_states(landmarks, handedness)
-        thumb_vertical = self._thumb_vertical_direction(landmarks)
+        points = self._landmark_points(landmarks)
+        finger_states = self._finger_states(points, handedness)
+        thumb_vertical = self._thumb_vertical_direction(points)
 
         extended_count = sum(bool(value) for value in finger_states.values())
-        other_folded = not finger_states["index"] and not finger_states["middle"] and not finger_states["ring"] and not finger_states["pinky"]
-        index_above_middle = landmarks.landmark[8].y < landmarks.landmark[12].y - 0.03
+        other_folded = (
+            not finger_states["index"]
+            and not finger_states["middle"]
+            and not finger_states["ring"]
+            and not finger_states["pinky"]
+        )
+        index_above_middle = points[8].y < points[12].y - 0.03
 
         if finger_states["thumb"] and all(finger_states[name] for name in ("index", "middle", "ring", "pinky")):
             return "open_palm", 0.94
@@ -407,8 +489,7 @@ class GestureInferenceService:
 
         return None, None
 
-    def _finger_states(self, landmarks: Any, handedness: str | None) -> dict[str, bool]:
-        points = landmarks.landmark
+    def _finger_states(self, points: Any, handedness: str | None) -> dict[str, bool]:
         thumb = self._is_thumb_extended(points, handedness)
         return {
             "thumb": thumb,
@@ -433,8 +514,7 @@ class GestureInferenceService:
         vertical_extended = abs(points[4].y - points[2].y) > 0.12
         return horizontal_extended or vertical_extended
 
-    def _thumb_vertical_direction(self, landmarks: Any) -> str | None:
-        points = landmarks.landmark
+    def _thumb_vertical_direction(self, points: Any) -> str | None:
         thumb_tip_y = points[4].y
         thumb_ip_y = points[3].y
         thumb_mcp_y = points[2].y
@@ -520,3 +600,46 @@ class GestureInferenceService:
             return (None, stable_hits) if with_count else None
 
         return (stable_gesture, stable_hits) if with_count else stable_gesture
+
+    def _set_detector_failure(
+        self,
+        *,
+        status: DetectorStatus,
+        error: str,
+        dependencies_available: bool,
+    ) -> None:
+        self._detector = None
+        self._detector_available = False
+        self._detector_status = status
+        self._detector_error = error
+        gesture_debug_log(
+            "inference.detector_init_failure",
+            detector_available=self._detector_available,
+            detector_status=self._detector_status,
+            dependencies_available=dependencies_available,
+            model_path=self._model_path,
+            error=error,
+        )
+
+    def _log_detector_unavailable_once(self, *, frame_shape: Any, frame_dtype: Any) -> None:
+        if self._detector_unavailable_logged:
+            return
+        self._detector_unavailable_logged = True
+        gesture_debug_log(
+            "inference.detector_unavailable",
+            frame_shape=frame_shape,
+            frame_dtype=frame_dtype,
+            detector_available=self._detector_available,
+            detector_status=self._detector_status,
+            model_path=self._model_path,
+            error=self._detector_error,
+            queue_state=self._detector_status,
+        )
+
+    def _resolve_model_path(self) -> str:
+        project_root = Path(__file__).resolve().parents[4]
+        return str(project_root / "models" / "hand_landmarker.task")
+
+    @staticmethod
+    def _landmark_points(landmarks: Any) -> Any:
+        return getattr(landmarks, "landmark", landmarks)

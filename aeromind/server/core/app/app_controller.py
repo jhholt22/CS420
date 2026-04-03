@@ -102,9 +102,9 @@ class AppController:
 
         ok = self.drone.connect()
         if self.use_drone and not ok:
-            log("[APP]", "Drone connect failed; staying in DRONE mode", fallback="disabled")
+            log("[APP]", "Drone connect failed; skipping Tello video startup", fallback="local_camera")
 
-        if self.use_drone:
+        if self.use_drone and ok:
             self.camera = TelloVideoSource(
                 self.drone,
                 video_url=self.cfg.tello_video_url,

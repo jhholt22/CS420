@@ -28,6 +28,13 @@ class ApiClient:
     def get_state(self) -> dict[str, Any]:
         return self._request("GET", "/state")
 
+    def get_diag(self) -> dict[str, Any]:
+        response = self._request("GET", "/diag")
+        diag = response.get("diag")
+        if not isinstance(diag, dict):
+            raise ApiClientError("GET /diag returned unexpected data")
+        return diag
+
     def send_command(self, command: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"command": command}
         if args:

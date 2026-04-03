@@ -58,6 +58,9 @@ class GestureController:
         self._confidence: float | None = None
         self._pending_command: str | None = None
         self._detector_available = False
+        self._detector_status = "detector_unavailable"
+        self._detector_error: str | None = None
+        self._detector_model_path: str | None = None
 
         self._last_stable_gesture_name: str | None = None
         self._stable_since = 0.0
@@ -87,6 +90,9 @@ class GestureController:
         self._pending_command = result.command_name
         self._queue_state = result.queue_state or "idle"
         self._detector_available = result.detector_available
+        self._detector_status = result.detector_status
+        self._detector_error = result.detector_error
+        self._detector_model_path = result.detector_model_path
 
         now = monotonic()
 
@@ -96,7 +102,7 @@ class GestureController:
             self._stable_since = 0.0
             self._armed_oneshot_command = None
             if self._queue_state == "idle":
-                self._queue_state = "detector_unavailable"
+                self._queue_state = self._detector_status
             gesture_debug_log(
                 "controller.no_detector",
                 raw_gesture=self._raw_gesture,
@@ -105,6 +111,9 @@ class GestureController:
                 resolved_command=self._pending_command,
                 queue_state=self._queue_state,
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
+                detector_error=self._detector_error,
+                model_path=self._detector_model_path,
             )
             return self.get_debug_state()
 
@@ -131,11 +140,12 @@ class GestureController:
             "controller.updated",
             raw_gesture=self._raw_gesture,
             stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=self._pending_command,
-            queue_state=self._queue_state,
-            detector_available=self._detector_available,
-        )
+                confidence=self._confidence,
+                resolved_command=self._pending_command,
+                queue_state=self._queue_state,
+                detector_available=self._detector_available,
+                detector_status=self._detector_status,
+            )
         return self.get_debug_state()
 
     def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
@@ -167,6 +177,7 @@ class GestureController:
                 resolved_command=command_name,
                 queue_state=blocked_state,
                 detector_available=self._detector_available,
+                detector_status=self._detector_status,
             )
             return False
 
@@ -284,7 +295,7 @@ class GestureController:
         if not self._enabled:
             return "gesture_off"
         if not self._detector_available:
-            return "detector_unavailable"
+            return (self._detector_status or "detector_unavailable").strip().lower()
         if not command_name:
             text = (self._queue_state or "").strip().lower()
             return text if text else "no_command"
@@ -300,6 +311,9 @@ class GestureController:
             "confidence": self._confidence,
             "pending_command": self._pending_command,
             "detector_available": self._detector_available,
+            "detector_status": self._detector_status,
+            "detector_error": self._detector_error,
+            "detector_model_path": self._detector_model_path,
             "stable_ms": self.get_stable_ms(),
             "threshold": self.get_threshold_for_gesture(self._last_stable_gesture_name),
         }

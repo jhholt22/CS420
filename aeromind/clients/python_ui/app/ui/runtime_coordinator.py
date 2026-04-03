@@ -39,13 +39,21 @@ class ClientRuntimeCoordinator:
         self.telemetry_service = telemetry_service
         self.video_service = video_service
         self._last_motion_probe: dict[str, object] | None = None
+        self._started = False
 
         self.status_thread = QThread(parent)
+        self.status_thread.setObjectName("status-thread")
         self.status_worker = StatusWorker(self.app_controller.api_client, self.config.status_refresh_ms)
         self.status_worker.moveToThread(self.status_thread)
         self.status_thread.started.connect(self.status_worker.start)
+        self.status_worker.workerFinished.connect(self.status_thread.quit)
+        self.status_thread.finished.connect(self.status_worker.deleteLater)
+        self.status_thread.finished.connect(lambda: gesture_debug_log("thread.quit", thread="status"))
+        self.status_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="status"))
+        self.status_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="status"))
 
         self.video_thread = QThread(parent)
+        self.video_thread.setObjectName("video-thread")
         self.video_worker = VideoWorker(
             self.video_service,
             self.config.video_url,
@@ -55,6 +63,11 @@ class ClientRuntimeCoordinator:
         )
         self.video_worker.moveToThread(self.video_thread)
         self.video_thread.started.connect(self.video_worker.start)
+        self.video_worker.workerFinished.connect(self.video_thread.quit)
+        self.video_thread.finished.connect(self.video_worker.deleteLater)
+        self.video_thread.finished.connect(lambda: gesture_debug_log("thread.quit", thread="video"))
+        self.video_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="video"))
+        self.video_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="video"))
 
     def connect_workers(
         self,
@@ -62,7 +75,7 @@ class ClientRuntimeCoordinator:
         on_frame_ready: Callable[[object], None],
         on_raw_frame_ready: Callable[[object], None],
         on_stream_status_changed: Callable[[str], None],
-        on_status_updated: Callable[[dict, object], None],
+        on_status_updated: Callable[[dict, object, dict], None],
         on_status_error: Callable[[str], None],
     ) -> None:
         self.video_worker.frameReady.connect(on_frame_ready)
@@ -72,16 +85,32 @@ class ClientRuntimeCoordinator:
         self.status_worker.statusError.connect(on_status_error)
 
     def start(self) -> None:
+        if self._started:
+            gesture_debug_log("thread.runtime_start_skipped", reason="already_started")
+            return
+        gesture_debug_log("thread.runtime_start", status_thread_running=self.status_thread.isRunning(), video_thread_running=self.video_thread.isRunning())
         self.status_thread.start()
         self.video_thread.start()
+        self._started = True
 
     def stop(self) -> None:
+        if not self._started and not self.status_thread.isRunning() and not self.video_thread.isRunning():
+            gesture_debug_log("thread.runtime_stop_skipped", reason="already_stopped")
+            return
+        gesture_debug_log("thread.runtime_stop_requested")
         self._safe_stop_worker(self.status_worker)
-        self._safe_quit_thread(self.status_thread, 1500)
         self._safe_stop_worker(self.video_worker)
-        self._safe_quit_thread(self.video_thread, 2000)
+        self._safe_quit_thread(self.status_thread, 5000)
+        self._safe_quit_thread(self.video_thread, 5000)
+        self._started = False
+        gesture_debug_log(
+            "thread.cleanup_completed",
+            status_thread_running=self.status_thread.isRunning(),
+            video_thread_running=self.video_thread.isRunning(),
+        )
 
     def reset_runtime_state(self) -> None:
+        gesture_debug_log("thread.runtime_reset_state")
         self.gesture_inference_service.reset()
         self.app_controller.gesture_controller.disable()
         self.app_state.gesture_enabled = False
@@ -97,6 +126,10 @@ class ClientRuntimeCoordinator:
     ) -> dict[str, str | float | bool | None] | None:
         try:
             result = self.gesture_inference_service.process_frame(frame)
+            self.app_state.set_detector_state(
+                ready=result.detector_status == "detector_ready",
+                error_reason=result.detector_error if result.detector_status != "detector_ready" else None,
+            )
             decision = self.app_controller.gesture_controller.evaluate_result(result)
             debug_state = decision.debug_state
             frame_id = self.gesture_logger.next_frame_id()
@@ -142,6 +175,7 @@ class ClientRuntimeCoordinator:
                 dispatch_result = self._call_api(
                     lambda: self.app_controller.command_controller.execute_gesture_command(command_name),
                     on_api_error=on_api_error,
+                    command_status="sent",
                 )
                 ack_ts = int(time() * 1000) if dispatch_result is not None else None
                 gesture_debug_log(
@@ -179,6 +213,7 @@ class ClientRuntimeCoordinator:
                     )
                     return self.app_controller.gesture_controller.finalize_dispatch(command_name)
             else:
+                self.app_state.set_command_status(status="blocked", error=decision.block_reason)
                 gesture_debug_log(
                     "mainwindow.dispatch_blocked",
                     frame_id=frame_id,
@@ -228,11 +263,11 @@ class ClientRuntimeCoordinator:
             )
             return None
 
-    def apply_status_update(self, status_data: dict, state_data: object) -> None:
+    def apply_status_update(self, status_data: dict, state_data: object, diag_data: dict) -> None:
         previous_mode = self.app_state.mode
         previous_height = self.app_state.height_cm
-        telemetry = self.telemetry_service.build_telemetry(status_data, state_data)
-        self.app_state.mark_connected(telemetry.mode)
+        telemetry = self.telemetry_service.build_telemetry(status_data, state_data, diag_data)
+        self.app_state.mark_connected(telemetry.mode, sdk_mode_ready=telemetry.sdk_mode_ready)
         self.app_state.update_from_telemetry(telemetry)
         self._maybe_log_motion_observed(previous_mode, previous_height)
 
@@ -254,13 +289,16 @@ class ClientRuntimeCoordinator:
         *,
         on_api_error: Callable[[str], None],
         suppress_noop: bool = False,
+        command_status: str = "sent",
     ) -> Any:
         try:
             result = action()
             if result is None and suppress_noop:
                 return None
+            self.app_state.set_command_status(status=command_status, error=None)
             return result
         except ApiClientError as exc:
+            self.app_state.set_command_status(status="failed", error=str(exc))
             on_api_error(str(exc))
             return None
 
@@ -328,16 +366,27 @@ class ClientRuntimeCoordinator:
         if callable(stop):
             try:
                 stop()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                gesture_debug_log("thread.worker_stop_failed", worker=type(worker).__name__, error=repr(exc))
 
     @staticmethod
     def _safe_quit_thread(thread: QThread | None, timeout_ms: int) -> None:
         if thread is None:
             return
+        if not thread.isRunning():
+            return
+        gesture_debug_log("thread.quit_requested", thread=thread.objectName() or "unnamed", timeout_ms=timeout_ms)
         if thread.isRunning():
             thread.quit()
-            thread.wait(timeout_ms)
+            if not thread.wait(timeout_ms):
+                gesture_debug_log("thread.wait_timeout", thread=thread.objectName() or "unnamed", timeout_ms=timeout_ms)
+                thread.requestInterruption()
+                if not thread.wait(1000):
+                    gesture_debug_log("thread.terminate_requested", thread=thread.objectName() or "unnamed")
+                    thread.terminate()
+                    thread.wait(1000)
+            else:
+                gesture_debug_log("thread.wait_completed", thread=thread.objectName() or "unnamed", timeout_ms=timeout_ms)
 
     @staticmethod
     def _as_int(value: object) -> int | None:

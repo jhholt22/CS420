@@ -3,6 +3,8 @@ from __future__ import annotations
 import socket
 from typing import Optional
 
+from server.core.util.log import log
+
 
 class TelloProtocol:
     def __init__(
@@ -35,6 +37,29 @@ class TelloProtocol:
         if self._sock is None:
             raise RuntimeError("TelloProtocol socket is not open")
 
+        log("[TELLO][UDP]", "Command sent", cmd=cmd, timeout_s=self._sock.gettimeout())
         self._sock.sendto(cmd.encode("utf-8"), self.tello_addr)
         data, _ = self._sock.recvfrom(1024)
-        return data.decode("utf-8").strip()
+        decoded, decode_error = self._decode_response_bytes(data)
+        log(
+            "[TELLO][UDP]",
+            "Raw response received",
+            cmd=cmd,
+            raw_len=len(data),
+            raw_hex=data.hex(),
+        )
+        log(
+            "[TELLO][UDP]",
+            "Decoded response",
+            cmd=cmd,
+            response=decoded.strip(),
+            decode_error=decode_error,
+        )
+        return decoded.strip()
+
+    @staticmethod
+    def _decode_response_bytes(data: bytes) -> tuple[str, str | None]:
+        try:
+            return data.decode("utf-8"), None
+        except UnicodeDecodeError as exc:
+            return data.decode("utf-8", errors="backslashreplace"), f"{type(exc).__name__}: {exc}"
