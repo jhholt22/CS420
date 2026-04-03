@@ -185,6 +185,7 @@ class ClientRuntimeCoordinator:
                 stable_gesture=result.stable_gesture,
                 confidence=result.confidence,
                 resolved_command=decision.command_name,
+                behavior_type=debug_state.get("behavior_type"),
                 threshold=threshold,
                 stable_ms=stable_ms,
                 stable_hits=result.stable_hits,
@@ -433,7 +434,7 @@ class ClientRuntimeCoordinator:
             observed = True
         elif command_name in {"takeoff", "land"} and (height_changed or mode_changed):
             observed = True
-        elif command_name in {"forward", "back", "left", "right", "clockwise", "counter_clockwise"} and mode_changed:
+        elif command_name in {"forward", "back", "left", "right", "clockwise", "counter_clockwise", "rotate_right", "rotate_left"} and mode_changed:
             observed = True
 
         if not observed:

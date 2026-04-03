@@ -7,6 +7,7 @@ import sys
 from typing import Any, Deque, Literal
 
 import cv2
+from app.models.gesture_behavior import GESTURE_BEHAVIOR_CONFIG, get_gesture_behavior
 from app.utils.logging_utils import gesture_debug_log
 
 
@@ -63,15 +64,9 @@ class GestureInferenceResult:
 
 class GestureInferenceService:
     _NOISE_MARKER = "__noise__"
-    _ONE_SHOT_COMMANDS = {"takeoff", "land", "emergency"}
-    _REPEATABLE_COMMANDS = {"up", "down", "forward"}
-    _NEUTRAL_GESTURES = {"open_palm"}
     _DEFAULT_MIN_CONFIDENCE = 0.72
     _GESTURE_COMMAND_MAP = {
-        "thumbs_up": "takeoff",
-        "fist": "land",
-        "thumbs_down": "down",
-        "point_up": "forward",
+        gesture_name: behavior.command for gesture_name, behavior in GESTURE_BEHAVIOR_CONFIG.items()
     }
     _INIT_LOGGED = False
 
@@ -94,17 +89,16 @@ class GestureInferenceService:
         self.debug_bypass_min_confidence = max(0.0, min(1.0, float(debug_bypass_min_confidence)))
         self._history: Deque[str | None] = deque(maxlen=self.stability_frames)
         self._gesture_command_map = dict(self._GESTURE_COMMAND_MAP)
-        self._enabled_gesture_commands = {
-            "thumbs_up",
-            "fist",
-            "thumbs_down",
-            "point_up",
-        }
+        self._enabled_gesture_commands = set(self._gesture_command_map.keys())
         self._gesture_safety_rules = {
             "thumbs_up": {"min_confidence": 0.92, "required_hits": self.stability_frames},
             "fist": {"min_confidence": 0.93, "required_hits": self.stability_frames},
-            "thumbs_down": {"min_confidence": 0.84, "required_hits": self.dominance_frames},
+            "open_palm": {"min_confidence": 0.88, "required_hits": self.dominance_frames},
             "point_up": {"min_confidence": 0.86, "required_hits": self.dominance_frames},
+            "point_left": {"min_confidence": 0.86, "required_hits": self.dominance_frames},
+            "point_right": {"min_confidence": 0.86, "required_hits": self.dominance_frames},
+            "l_shape_right": {"min_confidence": 0.88, "required_hits": self.dominance_frames},
+            "l_shape_left": {"min_confidence": 0.88, "required_hits": self.dominance_frames},
         }
         self._detector: Any | None = None
         self._detector_available = False
@@ -481,6 +475,8 @@ class GestureInferenceService:
         points = self._landmark_points(landmarks)
         finger_states = self._finger_states(points, handedness)
         thumb_vertical = self._thumb_vertical_direction(points)
+        thumb_horizontal = self._thumb_horizontal_direction(points)
+        index_direction = self._index_direction(points)
 
         extended_count = sum(bool(value) for value in finger_states.values())
         other_folded = (
@@ -498,20 +494,34 @@ class GestureInferenceService:
             return "fist", 0.94
 
         if (
+            finger_states["thumb"]
+            and finger_states["index"]
+            and not finger_states["middle"]
+            and not finger_states["ring"]
+            and not finger_states["pinky"]
+        ):
+            if thumb_horizontal == "right":
+                return "l_shape_right", 0.89
+            if thumb_horizontal == "left":
+                return "l_shape_left", 0.89
+
+        if (
             finger_states["index"]
             and not finger_states["middle"]
             and not finger_states["ring"]
             and not finger_states["pinky"]
             and not finger_states["thumb"]
-            and index_above_middle
         ):
-            return "point_up", 0.86
+            if index_direction == "up" and index_above_middle:
+                return "point_up", 0.86
+            if index_direction == "left":
+                return "point_left", 0.86
+            if index_direction == "right":
+                return "point_right", 0.86
 
         if finger_states["thumb"] and other_folded:
             if thumb_vertical == "up":
                 return "thumbs_up", 0.88
-            if thumb_vertical == "down":
-                return "thumbs_down", 0.88
 
         if extended_count >= 4:
             return "open_palm", 0.68
@@ -558,6 +568,23 @@ class GestureInferenceService:
             return "down"
         return None
 
+    def _thumb_horizontal_direction(self, points: Any) -> str | None:
+        delta_x = points[4].x - points[2].x
+        if delta_x >= 0.08:
+            return "right"
+        if delta_x <= -0.08:
+            return "left"
+        return None
+
+    def _index_direction(self, points: Any) -> str | None:
+        delta_x = points[8].x - points[5].x
+        delta_y = points[8].y - points[5].y
+        if abs(delta_x) > abs(delta_y) * 1.15:
+            return "right" if delta_x > 0 else "left"
+        if abs(delta_y) > abs(delta_x) * 1.15 and delta_y < 0:
+            return "up"
+        return None
+
     def _resolve_command(
         self,
         raw_gesture: str | None,
@@ -575,19 +602,17 @@ class GestureInferenceService:
         if confidence is None or confidence < self.min_confidence:
             return None, "low_confidence", self.dominance_frames, self.min_confidence
 
-        if stable_gesture in self._NEUTRAL_GESTURES:
-            return None, "neutral", self.dominance_frames, self.min_confidence
-
-        if stable_gesture not in self._enabled_gesture_commands:
+        behavior = get_gesture_behavior(stable_gesture)
+        if behavior is None or stable_gesture not in self._enabled_gesture_commands:
             return None, "disabled", self.dominance_frames, self.min_confidence
 
-        command_name = self._gesture_command_map.get(stable_gesture)
+        command_name = behavior.command
         if not command_name:
             return None, "stabilizing", self.dominance_frames, self.min_confidence
 
         safety_rule = self._gesture_safety_rules.get(stable_gesture, {})
-        default_hits = self.stability_frames if command_name in self._ONE_SHOT_COMMANDS else self.dominance_frames
-        default_confidence = self.min_confidence + (0.14 if command_name in self._ONE_SHOT_COMMANDS else 0.10)
+        default_hits = self.stability_frames if behavior.behavior_type == "one_shot" else self.dominance_frames
+        default_confidence = self.min_confidence + (0.14 if behavior.behavior_type == "one_shot" else 0.10)
         min_confidence = float(safety_rule.get("min_confidence", default_confidence))
         required_hits = int(safety_rule.get("required_hits", default_hits))
 
@@ -604,29 +629,31 @@ class GestureInferenceService:
             return None
         if raw_gesture is None or confidence is None or confidence < self.debug_bypass_min_confidence:
             return None
-        if raw_gesture in self._NEUTRAL_GESTURES or raw_gesture not in self._enabled_gesture_commands:
+        if raw_gesture not in self._enabled_gesture_commands:
             return None
-        return self._gesture_command_map.get(raw_gesture)
+        behavior = get_gesture_behavior(raw_gesture)
+        return behavior.command if behavior is not None else None
 
     @classmethod
     def get_threshold_for_gesture(cls, stable_gesture: str | None) -> float:
         if not stable_gesture:
             return cls._DEFAULT_MIN_CONFIDENCE
 
-        if stable_gesture in cls._NEUTRAL_GESTURES:
-            return cls._DEFAULT_MIN_CONFIDENCE
-
         safety_rule = {
             "thumbs_up": {"min_confidence": 0.92},
             "fist": {"min_confidence": 0.93},
-            "thumbs_down": {"min_confidence": 0.84},
+            "open_palm": {"min_confidence": 0.88},
             "point_up": {"min_confidence": 0.86},
+            "point_left": {"min_confidence": 0.86},
+            "point_right": {"min_confidence": 0.86},
+            "l_shape_right": {"min_confidence": 0.88},
+            "l_shape_left": {"min_confidence": 0.88},
         }.get(stable_gesture, {})
-        command_name = cls._GESTURE_COMMAND_MAP.get(stable_gesture)
+        behavior = get_gesture_behavior(stable_gesture)
         default_confidence = cls._DEFAULT_MIN_CONFIDENCE
-        if command_name in cls._ONE_SHOT_COMMANDS:
+        if behavior is not None and behavior.behavior_type == "one_shot":
             default_confidence += 0.14
-        elif command_name in cls._REPEATABLE_COMMANDS:
+        elif behavior is not None:
             default_confidence += 0.10
         return float(safety_rule.get("min_confidence", default_confidence))
 

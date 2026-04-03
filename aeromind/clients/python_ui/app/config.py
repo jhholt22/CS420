@@ -19,6 +19,8 @@ GESTURE_LOG_FLUSH_ROWS = 50
 PERFORMANCE_LOG_INTERVAL_MS = 5000
 DEBUG_BYPASS_STABILITY = False
 DEBUG_BYPASS_MIN_CONFIDENCE = 0.55
+GESTURE_MOVE_DISTANCE_CM = 50
+GESTURE_ROTATION_DEGREES = 90
 INFERENCE_INPUT_WIDTH = 320
 INFERENCE_INPUT_HEIGHT = 240
 INFERENCE_PROCESS_EVERY_NTH_FRAME = 1
@@ -42,6 +44,8 @@ class AppConfig:
     performance_log_interval_ms: int = PERFORMANCE_LOG_INTERVAL_MS
     debug_bypass_stability: bool = DEBUG_BYPASS_STABILITY
     debug_bypass_min_confidence: float = DEBUG_BYPASS_MIN_CONFIDENCE
+    gesture_move_distance_cm: int = GESTURE_MOVE_DISTANCE_CM
+    gesture_rotation_degrees: int = GESTURE_ROTATION_DEGREES
     inference_input_width: int = INFERENCE_INPUT_WIDTH
     inference_input_height: int = INFERENCE_INPUT_HEIGHT
     inference_process_every_nth_frame: int = INFERENCE_PROCESS_EVERY_NTH_FRAME

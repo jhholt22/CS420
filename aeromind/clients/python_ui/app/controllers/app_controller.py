@@ -13,6 +13,6 @@ class AppController:
     def __init__(self, config: AppConfig | None = None, api_client: ApiClient | None = None) -> None:
         self.config = config or AppConfig()
         self.api_client = api_client or ApiClient(self.config.api_base_url)
-        self.command_controller = CommandController(self.api_client)
+        self.command_controller = CommandController(self.api_client, self.config)
         self.rc_controller = RcController(self.api_client)
         self.gesture_controller = GestureController()

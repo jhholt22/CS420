@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from time import monotonic
 
+from app.models.gesture_behavior import GestureBehavior, get_gesture_behavior
 from app.services.gesture_inference_service import GestureInferenceResult, GestureInferenceService
 from app.utils.logging_utils import gesture_debug_log
 
@@ -16,24 +17,10 @@ class GestureDispatchDecision:
 
 
 class GestureController:
-    """Gesture gating with separate rules for one-shot and repeatable commands."""
+    """Maps stabilized gestures to command behaviors through one decision path."""
 
-    ONE_SHOT_COMMANDS = {"takeoff", "land", "emergency"}
-    REPEATABLE_COMMANDS = {"up", "down", "forward"}
-    NEUTRAL_GESTURES = {"open_palm"}
-
-    def __init__(
-        self,
-        oneshot_cooldown_ms: int = 1800,
-        repeat_cooldown_ms: int = 700,
-        release_timeout_ms: int = 250,
-        release_frames: int = 3,
-    ) -> None:
+    def __init__(self) -> None:
         self._enabled = False
-        self._oneshot_cooldown_ms = max(0, int(oneshot_cooldown_ms))
-        self._repeat_cooldown_ms = max(0, int(repeat_cooldown_ms))
-        self._release_timeout_ms = max(0, int(release_timeout_ms))
-        self._release_frames = max(1, int(release_frames))
         self.reset()
 
     def enable(self) -> None:
@@ -67,31 +54,20 @@ class GestureController:
         self._required_hits = 0
         self._required_confidence = 0.0
 
-        self._last_stable_gesture_name: str | None = None
         self._stable_since = 0.0
+        self._last_stable_gesture_name: str | None = None
 
+        self._last_active_gesture: str | None = None
+        self._last_dispatched_gesture: str | None = None
+        self._last_command_sent: str | None = None
+        self._last_command_timestamp = 0.0
+        self._active_repeatable_command: str | None = None
         self._armed_oneshot_command: str | None = None
-        self._last_dispatched_command: str | None = None
-        self._last_dispatched_at = 0.0
-        self._last_seen_stable_at = 0.0
-        self._release_candidate_since = 0.0
-        self._release_candidate_frames = 0
-        self._oneshot_rearm_pending_for: str | None = None
-        self._last_logged_holding_command: str | None = None
-        self._last_logged_cooldown_command: str | None = None
+        self._armed_oneshot_gesture: str | None = None
 
     def update_from_result(self, result: GestureInferenceResult) -> dict[str, str | float | bool | None]:
         if not self._enabled:
             self.reset()
-            gesture_debug_log(
-                "controller.disabled",
-                raw_gesture=result.raw_gesture,
-                stable_gesture=result.stable_gesture,
-                confidence=result.confidence,
-                resolved_command=result.command_name,
-                queue_state="gesture_off",
-                detector_available=result.detector_available,
-            )
             return self.get_debug_state()
 
         self._raw_gesture = result.raw_gesture or "-"
@@ -107,229 +83,126 @@ class GestureController:
         self._required_confidence = result.required_confidence
 
         now = monotonic()
-
-        if not self._detector_available:
-            self._pending_command = None
-            self._last_stable_gesture_name = None
-            self._stable_since = 0.0
-            self._armed_oneshot_command = None
-            if self._queue_state == "idle":
-                self._queue_state = self._detector_status
-            gesture_debug_log(
-                "controller.no_detector",
-                raw_gesture=self._raw_gesture,
-                stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=self._pending_command,
-                queue_state=self._queue_state,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-                detector_error=self._detector_error,
-                model_path=self._detector_model_path,
-            )
-            return self.get_debug_state()
-
         current_stable = result.stable_gesture
-
-        if current_stable:
-            self._last_seen_stable_at = now
-
         if current_stable != self._last_stable_gesture_name:
             self._stable_since = now if current_stable else 0.0
-
-            # re-arm oneshot only when stable gesture actually changes away
-            if self._last_stable_gesture_name and current_stable != self._last_stable_gesture_name:
-                self._release_oneshot(
-                    reason="stable_gesture_changed",
-                    now=now,
-                    stable_gesture=current_stable,
-                )
-
-        # if gesture disappears long enough, re-arm oneshot
-        if not current_stable and self._last_seen_stable_at > 0:
-            gap_ms = (now - self._last_seen_stable_at) * 1000.0
-            if gap_ms >= self._release_timeout_ms:
-                self._release_oneshot(
-                    reason="stable_gesture_gap",
-                    now=now,
-                    stable_gesture=current_stable,
-                )
-
-        self._update_oneshot_release_candidate(result=result, now=now)
-
         self._last_stable_gesture_name = current_stable
-        gesture_debug_log(
-            "controller.updated",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=self._pending_command,
-            queue_state=self._queue_state,
-            stable_hits=result.stable_hits,
-            required_hits=self._required_hits,
-            required_confidence=self._required_confidence,
-            detector_available=self._detector_available,
-            detector_status=self._detector_status,
-        )
+
+        current_marker = self._active_marker(result)
+        if self._active_repeatable_command is not None and current_marker != self._last_dispatched_gesture:
+            self._active_repeatable_command = None
+        self._last_active_gesture = current_marker
+
+        self._maybe_release_oneshot(result)
         return self.get_debug_state()
 
     def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
         debug_state = dict(self.update_from_result(result))
-        command_name = result.command_name
-        dispatch_allowed = self.should_dispatch_command(command_name)
-        block_reason = "-" if dispatch_allowed else self.normalize_block_reason(command_name)
-        debug_state["resolved_command"] = command_name
-        debug_state["dispatch_allowed"] = dispatch_allowed
-        debug_state["block_reason"] = block_reason
-        debug_state["inference_queue_state"] = result.queue_state
-        debug_state["controller_queue_state"] = self._queue_state
+        behavior = get_gesture_behavior(result.stable_gesture)
+        command_name = behavior.command if behavior is not None else result.command_name
+        behavior_type = behavior.behavior_type if behavior is not None else None
+        now = monotonic()
+
+        action = "blocked"
+        reason = self.normalize_block_reason(command_name)
+        dispatch_allowed = False
+
+        if not self._enabled:
+            self._queue_state = "gesture_off"
+            reason = "gesture_off"
+        elif not self._detector_available:
+            self._queue_state = self._detector_status
+            reason = self._detector_status
+        elif behavior is None or command_name is None:
+            reason = self.normalize_block_reason(command_name)
+        elif result.queue_state not in {"ready", "debug_bypass"}:
+            self._queue_state = result.queue_state
+            reason = self.normalize_block_reason(command_name)
+        else:
+            dispatch_allowed, action, reason = self._decide_behavior_action(
+                behavior=behavior,
+                now=now,
+            )
+
+        debug_state.update(
+            {
+                "resolved_command": command_name,
+                "behavior_type": behavior_type,
+                "dispatch_allowed": dispatch_allowed,
+                "block_reason": reason,
+                "inference_queue_state": result.queue_state,
+                "controller_queue_state": self._queue_state,
+                "last_active_gesture": self._last_active_gesture,
+                "last_command_sent": self._last_command_sent,
+                "active_repeatable_command": self._active_repeatable_command,
+            }
+        )
+        gesture_debug_log(
+            "controller.behavior_decision",
+            gesture=result.stable_gesture or result.raw_gesture,
+            command=command_name,
+            behavior_type=behavior_type,
+            action=action,
+            reason=reason,
+            queue_state=self._queue_state,
+            confidence=result.confidence,
+        )
         return GestureDispatchDecision(
             command_name=command_name,
             dispatch_allowed=dispatch_allowed,
-            block_reason=block_reason,
+            block_reason=reason,
             debug_state=debug_state,
-        )
-
-    def should_dispatch_command(self, command_name: str | None) -> bool:
-        if not self._enabled or not self._detector_available or not command_name:
-            blocked_state = (
-                "gesture_off"
-                if not self._enabled
-                else "detector_unavailable"
-                if not self._detector_available
-                else self._queue_state or "no_command"
-            )
-            gesture_debug_log(
-                "controller.dispatch_blocked",
-                raw_gesture=self._raw_gesture,
-                stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=command_name,
-                queue_state=blocked_state,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-            )
-            return False
-
-        now = monotonic()
-        elapsed_ms = (now - self._last_dispatched_at) * 1000.0
-
-        if command_name in self.ONE_SHOT_COMMANDS:
-            self._clear_cooldown_log_if_needed(command_name)
-            if self._armed_oneshot_command == command_name:
-                self._queue_state = "holding"
-                self._log_oneshot_holding(command_name)
-                gesture_debug_log(
-                    "controller.dispatch_blocked",
-                    raw_gesture=self._raw_gesture,
-                    stable_gesture=self._stable_gesture,
-                    confidence=self._confidence,
-                    resolved_command=command_name,
-                    queue_state=self._queue_state,
-                    detector_available=self._detector_available,
-                )
-                return False
-
-            if self._last_dispatched_command == command_name and elapsed_ms < self._oneshot_cooldown_ms:
-                self._queue_state = "cooldown"
-                self._log_oneshot_cooldown(command_name, elapsed_ms)
-                gesture_debug_log(
-                    "controller.dispatch_blocked",
-                    raw_gesture=self._raw_gesture,
-                    stable_gesture=self._stable_gesture,
-                    confidence=self._confidence,
-                    resolved_command=command_name,
-                    queue_state=self._queue_state,
-                    detector_available=self._detector_available,
-                )
-                return False
-
-            self._log_oneshot_rearmed_if_needed(command_name)
-            self._queue_state = "dispatch"
-            gesture_debug_log(
-                "controller.dispatch_ready",
-                raw_gesture=self._raw_gesture,
-                stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=command_name,
-                queue_state=self._queue_state,
-                detector_available=self._detector_available,
-            )
-            return True
-
-        if command_name in self.REPEATABLE_COMMANDS:
-            if self._last_dispatched_command == command_name and elapsed_ms < self._repeat_cooldown_ms:
-                self._queue_state = "cooldown"
-                gesture_debug_log(
-                    "controller.dispatch_blocked",
-                    raw_gesture=self._raw_gesture,
-                    stable_gesture=self._stable_gesture,
-                    confidence=self._confidence,
-                    resolved_command=command_name,
-                    queue_state=self._queue_state,
-                    detector_available=self._detector_available,
-                )
-                return False
-
-            self._queue_state = "dispatch"
-            gesture_debug_log(
-                "controller.dispatch_ready",
-                raw_gesture=self._raw_gesture,
-                stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=command_name,
-                queue_state=self._queue_state,
-                detector_available=self._detector_available,
-            )
-            return True
-
-        self._queue_state = "blocked_unknown_command"
-        gesture_debug_log(
-            "controller.dispatch_blocked",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=command_name,
-            queue_state=self._queue_state,
-            detector_available=self._detector_available,
-        )
-        return False
-
-    def mark_command_dispatched(self, command_name: str) -> None:
-        self._last_command = command_name
-        self._last_dispatched_command = command_name
-        self._last_dispatched_at = monotonic()
-        if command_name in self.ONE_SHOT_COMMANDS:
-            self._armed_oneshot_command = command_name
-            self._release_candidate_since = 0.0
-            self._release_candidate_frames = 0
-            self._oneshot_rearm_pending_for = None
-            self._last_logged_holding_command = None
-            self._last_logged_cooldown_command = None
-            gesture_debug_log(
-                "controller.oneshot_armed",
-                raw_gesture=self._raw_gesture,
-                stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=command_name,
-                queue_state="armed",
-                detector_available=self._detector_available,
-            )
-        self._queue_state = "sent"
-        self._pending_command = None
-        gesture_debug_log(
-            "controller.dispatched",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=command_name,
-            queue_state=self._queue_state,
-            detector_available=self._detector_available,
         )
 
     def finalize_dispatch(self, command_name: str) -> dict[str, str | float | bool | None]:
         self.mark_command_dispatched(command_name)
         return self.get_debug_state()
+
+    def mark_command_dispatched(self, command_name: str) -> None:
+        behavior = get_gesture_behavior(self._last_stable_gesture_name or self._raw_gesture)
+        self._last_command = command_name
+        self._last_command_sent = command_name
+        self._last_command_timestamp = monotonic()
+        self._last_dispatched_gesture = self._last_stable_gesture_name or self._raw_gesture or None
+
+        if behavior is not None:
+            if behavior.behavior_type == "one_shot":
+                self._armed_oneshot_command = command_name
+                self._armed_oneshot_gesture = behavior.gesture
+                self._active_repeatable_command = None
+                gesture_debug_log(
+                    "controller.oneshot_armed",
+                    gesture=behavior.gesture,
+                    command=command_name,
+                    behavior_type=behavior.behavior_type,
+                    action="sent",
+                    reason="one_shot_armed",
+                )
+            elif behavior.behavior_type == "repeatable":
+                self._active_repeatable_command = command_name
+                gesture_debug_log(
+                    "controller.repeatable_active",
+                    gesture=behavior.gesture,
+                    command=command_name,
+                    behavior_type=behavior.behavior_type,
+                    action="sent",
+                    reason="repeatable_active",
+                )
+            elif behavior.behavior_type == "safety":
+                self._armed_oneshot_command = None
+                self._armed_oneshot_gesture = None
+                self._active_repeatable_command = None
+                gesture_debug_log(
+                    "controller.safety_reset",
+                    gesture=behavior.gesture,
+                    command=command_name,
+                    behavior_type=behavior.behavior_type,
+                    action="sent",
+                    reason="safety_immediate",
+                )
+
+        self._queue_state = "sent"
+        self._pending_command = None
 
     def get_stable_ms(self) -> int | None:
         if not self._last_stable_gesture_name or self._stable_since <= 0.0:
@@ -366,111 +239,96 @@ class GestureController:
             "threshold": self.get_threshold_for_gesture(self._last_stable_gesture_name),
             "required_hits": self._required_hits,
             "required_confidence": self._required_confidence,
+            "last_active_gesture": self._last_active_gesture,
+            "last_dispatched_gesture": self._last_dispatched_gesture,
+            "last_command_sent": self._last_command_sent,
+            "last_command_timestamp": int(self._last_command_timestamp * 1000.0) if self._last_command_timestamp else None,
+            "active_repeatable_command": self._active_repeatable_command,
         }
 
-    def _update_oneshot_release_candidate(self, *, result: GestureInferenceResult, now: float) -> None:
-        armed_command = self._armed_oneshot_command
-        if armed_command is None:
-            self._release_candidate_since = 0.0
-            self._release_candidate_frames = 0
+    def _decide_behavior_action(
+        self,
+        *,
+        behavior: GestureBehavior,
+        now: float,
+    ) -> tuple[bool, str, str]:
+        elapsed_ms = (now - self._last_command_timestamp) * 1000.0
+
+        if behavior.behavior_type == "safety":
+            if self._last_dispatched_gesture == behavior.gesture and self._last_command_sent == behavior.command:
+                self._queue_state = "waiting_release"
+                return False, "waiting_release", "safety_held"
+            self._queue_state = "dispatch"
+            self._armed_oneshot_command = None
+            self._armed_oneshot_gesture = None
+            self._active_repeatable_command = None
+            return True, "sent", "safety_priority"
+
+        if behavior.behavior_type == "one_shot":
+            if behavior.requires_release and self._armed_oneshot_command == behavior.command:
+                self._queue_state = "waiting_release"
+                return False, "waiting_release", "release_required"
+            if self._last_command_sent == behavior.command and elapsed_ms < behavior.cooldown_ms:
+                self._queue_state = "cooldown"
+                gesture_debug_log(
+                    "controller.oneshot_cooldown_active",
+                    gesture=behavior.gesture,
+                    command=behavior.command,
+                    behavior_type=behavior.behavior_type,
+                    action="cooldown",
+                    reason="cooldown_active",
+                    cooldown_remaining_ms=max(0, int(behavior.cooldown_ms - elapsed_ms)),
+                )
+                return False, "cooldown", "cooldown_active"
+            if self._armed_oneshot_gesture != behavior.gesture and self._last_command_sent == behavior.command:
+                gesture_debug_log(
+                    "controller.oneshot_rearmed",
+                    gesture=behavior.gesture,
+                    command=behavior.command,
+                    behavior_type=behavior.behavior_type,
+                    action="rearmed",
+                    reason="gesture_changed",
+                )
+            self._queue_state = "dispatch"
+            return True, "sent", "one_shot_ready"
+
+        if self._last_command_sent == behavior.command and elapsed_ms < behavior.cooldown_ms:
+            self._queue_state = "cooldown"
+            return False, "cooldown", "cooldown_active"
+
+        self._queue_state = "dispatch"
+        return True, "sent", "repeatable_ready"
+
+    def _maybe_release_oneshot(self, result: GestureInferenceResult) -> None:
+        if self._armed_oneshot_command is None or self._armed_oneshot_gesture is None:
             return
 
-        if not self._is_release_observed(result):
-            self._release_candidate_since = 0.0
-            self._release_candidate_frames = 0
+        current_marker = self._active_marker(result)
+        if current_marker == self._armed_oneshot_gesture:
             return
 
-        if self._release_candidate_since <= 0.0:
-            self._release_candidate_since = now
-            self._release_candidate_frames = 1
-        else:
-            self._release_candidate_frames += 1
-
-        release_elapsed_ms = (now - self._release_candidate_since) * 1000.0
-        if release_elapsed_ms >= self._release_timeout_ms or self._release_candidate_frames >= self._release_frames:
-            self._release_oneshot(
-                reason="neutral_release",
-                now=now,
-                stable_gesture=result.stable_gesture,
-            )
-
-    def _release_oneshot(self, *, reason: str, now: float, stable_gesture: str | None) -> None:
-        armed_command = self._armed_oneshot_command
-        if armed_command is None:
-            self._release_candidate_since = 0.0
-            self._release_candidate_frames = 0
-            return
-
+        released_command = self._armed_oneshot_command
+        released_gesture = self._armed_oneshot_gesture
         self._armed_oneshot_command = None
-        self._release_candidate_since = 0.0
-        self._release_candidate_frames = 0
-        self._oneshot_rearm_pending_for = armed_command
-        self._last_logged_holding_command = None
+        self._armed_oneshot_gesture = None
+        if self._active_repeatable_command is not None and current_marker != self._last_active_gesture:
+            self._active_repeatable_command = None
         gesture_debug_log(
             "controller.oneshot_released",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=stable_gesture or self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=armed_command,
-            queue_state=reason,
-            detector_available=self._detector_available,
-            release_elapsed_ms=max(0, int((now - self._last_dispatched_at) * 1000.0)),
+            gesture=released_gesture,
+            command=released_command,
+            behavior_type="one_shot",
+            action="released",
+            reason="gesture_changed",
+            release_marker=current_marker or "-",
         )
 
-    def _log_oneshot_holding(self, command_name: str) -> None:
-        if self._last_logged_holding_command == command_name:
-            return
-        self._last_logged_holding_command = command_name
-        gesture_debug_log(
-            "controller.oneshot_holding",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=command_name,
-            queue_state="holding",
-            detector_available=self._detector_available,
-        )
-
-    def _log_oneshot_cooldown(self, command_name: str, elapsed_ms: float) -> None:
-        if self._last_logged_cooldown_command == command_name:
-            return
-        self._last_logged_cooldown_command = command_name
-        gesture_debug_log(
-            "controller.oneshot_cooldown_active",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=command_name,
-            queue_state="cooldown",
-            detector_available=self._detector_available,
-            cooldown_remaining_ms=max(0, int(self._oneshot_cooldown_ms - elapsed_ms)),
-        )
-
-    def _clear_cooldown_log_if_needed(self, command_name: str) -> None:
-        if self._last_logged_cooldown_command == command_name and self._last_dispatched_command == command_name:
-            elapsed_ms = (monotonic() - self._last_dispatched_at) * 1000.0
-            if elapsed_ms >= self._oneshot_cooldown_ms:
-                self._last_logged_cooldown_command = None
-
-    def _log_oneshot_rearmed_if_needed(self, command_name: str) -> None:
-        if self._oneshot_rearm_pending_for != command_name:
-            return
-        gesture_debug_log(
-            "controller.oneshot_rearmed",
-            raw_gesture=self._raw_gesture,
-            stable_gesture=self._stable_gesture,
-            confidence=self._confidence,
-            resolved_command=command_name,
-            queue_state="dispatch_ready",
-            detector_available=self._detector_available,
-        )
-        self._oneshot_rearm_pending_for = None
-
-    def _is_release_observed(self, result: GestureInferenceResult) -> bool:
-        if result.command_name is not None:
-            return False
-        stable_gesture = (result.stable_gesture or "").strip().lower()
-        raw_gesture = (result.raw_gesture or "").strip().lower()
-        if not stable_gesture and not raw_gesture:
-            return True
-        return stable_gesture in self.NEUTRAL_GESTURES or raw_gesture in self.NEUTRAL_GESTURES
+    @staticmethod
+    def _active_marker(result: GestureInferenceResult) -> str | None:
+        stable = (result.stable_gesture or "").strip().lower()
+        raw = (result.raw_gesture or "").strip().lower()
+        if stable:
+            return stable
+        if raw:
+            return raw
+        return None

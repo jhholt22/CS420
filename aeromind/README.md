@@ -113,11 +113,17 @@ http://127.0.0.1:8080/video
 Uses MediaPipe for hand tracking.
 
 Supported gestures:
-- open_palm
-- fist
-- thumbs_up
-- thumbs_down
-- point_up
+| Gesture Name        | Shape Description               | Command          | Type       | Behavior                     |
+| ------------------- | ------------------------------- | ---------------- | ---------- | ---------------------------- |
+| **thumbs_up**       | Thumb up, others folded         | `takeoff`        | One-shot   | Fires once, requires release |
+| **fist**            | All fingers folded              | `land`           | One-shot   | Fires once, requires release |
+| **open_palm**       | All fingers extended            | `stop` / neutral | Safety     | Stops movement / resets      |
+| **point_up**        | Index up, others folded         | `forward`        | Repeatable | Moves forward with cooldown  |
+| **point_left**      | Index pointing left             | `left`           | Repeatable | Moves left with cooldown     |
+| **point_right**     | Index pointing right            | `right`          | Repeatable | Moves right with cooldown    |
+| **L-shape (right)** | Thumb + index (L shape → right) | `rotate_right`   | Repeatable | Rotates right in bursts      |
+| **L-shape (left)**  | Thumb + index (L shape → left)  | `rotate_left`    | Repeatable | Rotates left in bursts       |
+
 
 ---
 
