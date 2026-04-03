@@ -36,7 +36,7 @@ class GestureLogger:
         "notes",
     ]
 
-    def __init__(self, log_path: str | Path | None = None) -> None:
+    def __init__(self, log_path: str | Path | None = None, *, flush_every_rows: int = 50) -> None:
         self.run_id = datetime.now().strftime("%Y%m%d%H%M%S")
         self._frame_id = 0
         self._current_label = "-"
@@ -46,6 +46,8 @@ class GestureLogger:
         self._distance_m = ""
         self._notes = ""
         self._session_active = False
+        self._flush_every_rows = max(1, int(flush_every_rows))
+        self._pending_rows = 0
         root_path = Path(__file__).resolve().parents[4]
         default_log_path = root_path / self._LOG_DIR / self._DEFAULT_FILENAME
         self._log_path = Path(log_path) if log_path is not None else default_log_path
@@ -101,8 +103,15 @@ class GestureLogger:
     def close(self) -> None:
         if getattr(self, "_file", None) is None:
             return
-        self._file.flush()
+        self.flush()
         self._file.close()
+        self._file = None
+
+    def flush(self) -> None:
+        if getattr(self, "_file", None) is None:
+            return
+        self._file.flush()
+        self._pending_rows = 0
 
     def set_current_label(self, label: str) -> None:
         normalized = self._normalize_text(label)
@@ -360,4 +369,6 @@ class GestureLogger:
             "notes": self._notes if notes is None else self._normalize_optional_text(notes),
         }
         self._writer.writerow(row)
-        self._file.flush()
+        self._pending_rows += 1
+        if self._pending_rows >= self._flush_every_rows:
+            self.flush()

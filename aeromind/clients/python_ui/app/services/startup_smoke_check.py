@@ -5,6 +5,7 @@ from typing import Any
 
 from app.config import AppConfig
 from app.models.startup_check import StartupCheckItem, StartupSummary
+from app.models.video_source import VideoSourceSpec
 from app.services.api_client import ApiClient, ApiClientError
 from app.services.gesture_inference_service import GestureInferenceService
 from app.services.video_stream_service import VideoStreamService
@@ -168,13 +169,14 @@ class StartupSmokeCheckService:
     def _check_video_stream(self, status_payload: dict[str, Any] | None) -> StartupCheckItem:
         mode = str((status_payload or {}).get("mode") or "--").lower()
         running = bool((status_payload or {}).get("running"))
-        reachable = self.video_stream_service.probe_stream(self.config.video_url)
+        source = self._video_source_for_mode(mode)
+        reachable = self.video_stream_service.probe_stream(source)
 
         if reachable:
             return StartupCheckItem(
                 subsystem="video_stream",
                 status="ok",
-                reason=f"Video endpoint is reachable at {self.config.video_url}.",
+                reason=f"Video source is reachable for {source.label}.",
                 next_action="None.",
             )
 
@@ -193,6 +195,13 @@ class StartupSmokeCheckService:
                 reason="Drone mode is active but the MJPEG/video stream is not reachable yet.",
                 next_action="Wait for stream startup or inspect Tello video logs if it never becomes ready.",
             )
+        if mode == "sim":
+            return StartupCheckItem(
+                subsystem="video_stream",
+                status="warning",
+                reason=f"SIM mode is active but {source.label} is not producing frames yet.",
+                next_action="Verify the configured webcam index is correct and not in use by another app.",
+            )
 
         return StartupCheckItem(
             subsystem="video_stream",
@@ -201,13 +210,18 @@ class StartupSmokeCheckService:
             next_action="Verify the MJPEG server is running on the configured video URL.",
         )
 
+    def _video_source_for_mode(self, mode: str) -> VideoSourceSpec:
+        if mode == "sim":
+            return self.config.sim_video_source()
+        return self.config.drone_video_source()
+
 
 def run_startup_smoke_check(config: AppConfig | None = None) -> StartupSummary:
     cfg = config or AppConfig()
     api_client = ApiClient(cfg.api_base_url)
     gesture_service = GestureInferenceService()
     video_service = VideoStreamService(
-        cfg.video_url,
+        cfg.drone_video_source(),
         prefer_ffmpeg=cfg.video_backend_prefer_ffmpeg,
         max_width=cfg.video_max_width,
         max_height=cfg.video_max_height,

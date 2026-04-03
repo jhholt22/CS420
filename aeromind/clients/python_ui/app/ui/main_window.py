@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 
@@ -53,7 +54,7 @@ class MainWindow(QMainWindow):
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
         self.gesture_inference_service = GestureInferenceService()
-        self.gesture_logger = GestureLogger()
+        self.gesture_logger = GestureLogger(flush_every_rows=self.config.gesture_log_flush_rows)
         self.gesture_logger.set_session_context(
             participant_id="P001",
             lighting="unknown",
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         self.gesture_debug_panel.set_session_context(**self.gesture_logger.get_session_context())
         self.telemetry_service = TelemetryService()
         self.video_service = VideoStreamService(
-            self.config.video_url,
+            self.config.drone_video_source(),
             prefer_ffmpeg=self.config.video_backend_prefer_ffmpeg,
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,
@@ -86,6 +87,9 @@ class MainWindow(QMainWindow):
             video_service=self.video_service,
         )
         self._connect_worker_signals()
+        self._gesture_inference_timer = QTimer(self)
+        self._gesture_inference_timer.setInterval(self.config.gesture_inference_interval_ms())
+        self._gesture_inference_timer.timeout.connect(self._process_pending_gesture_frame)
 
         self._apply_hud_defaults()
         self._apply_debug_defaults()
@@ -95,6 +99,7 @@ class MainWindow(QMainWindow):
         self._run_startup_smoke_check()
 
         self.runtime.start()
+        self._gesture_inference_timer.start()
 
     def _connect_worker_signals(self) -> None:
         self.runtime.connect_workers(
@@ -117,6 +122,7 @@ class MainWindow(QMainWindow):
 
         self._is_shutting_down = True
         gesture_debug_log("thread.window_close_started")
+        self._gesture_inference_timer.stop()
         self.runtime.stop()
         self.runtime.reset_runtime_state()
         self.gesture_logger.close()
@@ -254,10 +260,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_start_sim_clicked(self) -> None:
-        self.runtime.call_api(self.app_controller.command_controller.start_sim, on_api_error=self._on_status_error)
+        self.runtime.start_sim_mode(on_api_error=self._on_status_error)
 
     def _on_start_drone_clicked(self) -> None:
-        self.runtime.call_api(self.app_controller.command_controller.start_drone, on_api_error=self._on_status_error)
+        self.runtime.start_drone_mode(on_api_error=self._on_status_error)
 
     def _on_stop_clicked(self) -> None:
         self.runtime.call_api(self.app_controller.command_controller.stop, on_api_error=self._on_status_error)
@@ -282,6 +288,7 @@ class MainWindow(QMainWindow):
         if not self.app_state.gesture_enabled:
             self.app_controller.gesture_controller.disable()
             self.gesture_inference_service.reset()
+            self.runtime.clear_pending_gesture_frames()
 
         self._sync_ui_from_state()
 
@@ -329,7 +336,17 @@ class MainWindow(QMainWindow):
         if not self.app_controller.gesture_controller.is_enabled():
             return
 
-        debug_state = self.runtime.process_gesture_frame(frame, on_api_error=self._on_status_error)
+        self.runtime.enqueue_gesture_frame(frame)
+
+    def _process_pending_gesture_frame(self) -> None:
+        if self._is_shutting_down:
+            return
+        if not self.app_controller.gesture_controller.is_enabled():
+            self.runtime.clear_pending_gesture_frames()
+            return
+        debug_state = self.runtime.process_pending_gesture_frame(on_api_error=self._on_status_error)
+        if debug_state is None:
+            return
         self._sync_gesture_panel_from_state(debug_state)
 
     def _on_status_updated(self, status_data: dict, state_data: object, diag_data: dict) -> None:

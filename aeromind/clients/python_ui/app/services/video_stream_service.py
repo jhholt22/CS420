@@ -6,34 +6,37 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import cv2
+from app.models.video_source import VideoSourceSpec
 from app.utils.logging_utils import gesture_debug_log
 
 
 class VideoStreamService:
     def __init__(
         self,
-        stream_url: str,
+        default_source: VideoSourceSpec | str,
         *,
         prefer_ffmpeg: bool = True,
         max_width: int | None = None,
         max_height: int | None = None,
     ) -> None:
-        self.stream_url = stream_url
         self.prefer_ffmpeg = prefer_ffmpeg
         self.max_width = max_width
         self.max_height = max_height
         self._capture: cv2.VideoCapture | None = None
+        self._current_source = self._coerce_source(default_source)
 
-    def open_stream(self, url: str | None = None) -> bool:
-        target_url = (url or self.stream_url).strip()
-        if not target_url:
-            self.close()
-            return False
-
+    def open_stream(self, source: VideoSourceSpec | str | int | None = None) -> bool:
+        target_source = self._coerce_source(source) if source is not None else self._current_source
         self.close()
-        self.stream_url = target_url
+        self._current_source = target_source
 
-        capture = self._open_capture(target_url)
+        gesture_debug_log(
+            "video.connect_attempt",
+            source_kind=target_source.kind,
+            source_value=target_source.value,
+            source_label=target_source.label,
+        )
+        capture = self._open_capture(target_source)
         if capture is None or not capture.isOpened():
             if capture is not None:
                 self._safe_release(capture)
@@ -42,22 +45,38 @@ class VideoStreamService:
 
         self._capture = capture
         self._configure_capture(self._capture)
-        gesture_debug_log("thread.video_capture_opened", url=target_url, is_open=self.is_open())
+        gesture_debug_log(
+            "video.stream_open_success",
+            source_kind=target_source.kind,
+            source_value=target_source.value,
+            source_label=target_source.label,
+            is_open=self.is_open(),
+        )
         return self.is_open()
 
     def read_frame(self) -> Any | None:
         if not self.is_open():
             return None
 
+        assert self._capture is not None
         try:
-            assert self._capture is not None
             ok, frame = self._capture.read()
-        except cv2.error:
-            return None
-        except Exception:
+        except cv2.error as exc:
+            gesture_debug_log(
+                "video.frame_read_failed",
+                source_kind=self._current_source.kind,
+                source_value=self._current_source.value,
+                error=repr(exc),
+            )
+            self.close()
             return None
 
         if not ok or frame is None:
+            gesture_debug_log(
+                "video.frame_empty",
+                source_kind=self._current_source.kind,
+                source_value=self._current_source.value,
+            )
             self.close()
             return None
         return frame
@@ -69,51 +88,129 @@ class VideoStreamService:
         if not self.is_open():
             return False
 
+        assert self._capture is not None
         try:
-            assert self._capture is not None
             return bool(self._capture.grab())
-        except cv2.error:
-            return False
-        except Exception:
+        except cv2.error as exc:
+            gesture_debug_log(
+                "video.frame_grab_failed",
+                source_kind=self._current_source.kind,
+                source_value=self._current_source.value,
+                error=repr(exc),
+            )
             return False
 
     def close(self) -> None:
-        if self._capture is not None:
-            gesture_debug_log("thread.video_capture_close_requested", url=self.stream_url)
-            self._safe_release(self._capture)
-            self._capture = None
+        if self._capture is None:
+            return
+        gesture_debug_log(
+            "video.capture_release_requested",
+            source_kind=self._current_source.kind,
+            source_value=self._current_source.value,
+            source_label=self._current_source.label,
+        )
+        self._safe_release(self._capture)
+        self._capture = None
+        gesture_debug_log(
+            "video.capture_released",
+            source_kind=self._current_source.kind,
+            source_value=self._current_source.value,
+            source_label=self._current_source.label,
+        )
 
-    def probe_stream(self, url: str | None = None) -> bool:
-        target_url = (url or self.stream_url).strip()
+    def probe_stream(self, source: VideoSourceSpec | str | int | None = None) -> bool:
+        target_source = self._coerce_source(source) if source is not None else self._current_source
+        if target_source.kind == "webcam":
+            capture = self._try_open_webcam(int(target_source.value))
+            if capture is None:
+                return False
+            self._safe_release(capture)
+            return True
+        target_url = str(target_source.value).strip()
         if not target_url:
             return False
         return self._is_stream_reachable(target_url)
 
-    def _open_capture(self, url: str) -> cv2.VideoCapture | None:
+    def current_source(self) -> VideoSourceSpec:
+        return self._current_source
+
+    def _open_capture(self, source: VideoSourceSpec) -> cv2.VideoCapture | None:
+        if source.kind == "webcam":
+            return self._open_webcam_capture(source)
+        return self._open_mjpeg_capture(source)
+
+    def _open_mjpeg_capture(self, source: VideoSourceSpec) -> cv2.VideoCapture | None:
+        url = str(source.value).strip()
+        if not url:
+            gesture_debug_log("video.stream_open_failed", source_kind=source.kind, source_value=source.value, error="empty_url")
+            return None
         if not self._is_stream_reachable(url):
-            gesture_debug_log("thread.video_capture_unreachable", url=url)
+            gesture_debug_log("video.stream_open_failed", source_kind=source.kind, source_value=source.value, error="unreachable")
             return None
         if self.prefer_ffmpeg:
-            capture = self._try_open(url, cv2.CAP_FFMPEG)
+            capture = self._try_open_url(url, cv2.CAP_FFMPEG)
             if capture is not None:
                 return capture
-        return self._try_open(url)
+        capture = self._try_open_url(url)
+        if capture is None:
+            gesture_debug_log("video.stream_open_failed", source_kind=source.kind, source_value=source.value, error="opencv_open_failed")
+        return capture
+
+    def _open_webcam_capture(self, source: VideoSourceSpec) -> cv2.VideoCapture | None:
+        index = int(source.value)
+        capture = self._try_open_webcam(index)
+        if capture is None:
+            gesture_debug_log(
+                "video.webcam_open_failed",
+                source_kind=source.kind,
+                source_value=index,
+                source_label=source.label,
+            )
+            return None
+        gesture_debug_log(
+            "video.webcam_open_success",
+            source_kind=source.kind,
+            source_value=index,
+            source_label=source.label,
+        )
+        return capture
 
     @staticmethod
-    def _try_open(url: str, backend: int | None = None) -> cv2.VideoCapture | None:
+    def _try_open_url(url: str, backend: int | None = None) -> cv2.VideoCapture | None:
         try:
             capture = cv2.VideoCapture(url, backend) if backend is not None else cv2.VideoCapture(url)
-        except Exception:
+        except cv2.error:
             return None
 
         if capture is None or not capture.isOpened():
             if capture is not None:
                 try:
                     capture.release()
-                except Exception:
+                except cv2.error:
                     pass
             return None
         return capture
+
+    @staticmethod
+    def _try_open_webcam(index: int) -> cv2.VideoCapture | None:
+        backends: list[int | None] = [None]
+        cap_dshow = getattr(cv2, "CAP_DSHOW", None)
+        if cap_dshow is not None:
+            backends.append(int(cap_dshow))
+
+        for backend in backends:
+            try:
+                capture = cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
+            except cv2.error:
+                capture = None
+            if capture is not None and capture.isOpened():
+                return capture
+            if capture is not None:
+                try:
+                    capture.release()
+                except cv2.error:
+                    pass
+        return None
 
     def _configure_capture(self, capture: cv2.VideoCapture) -> None:
         settings: list[tuple[int, float]] = [(cv2.CAP_PROP_BUFFERSIZE, 1)]
@@ -132,15 +229,15 @@ class VideoStreamService:
         for prop, value in settings:
             try:
                 capture.set(prop, value)
-            except Exception:
+            except cv2.error:
                 continue
 
     @staticmethod
     def _safe_release(capture: cv2.VideoCapture) -> None:
         try:
             capture.release()
-        except Exception:
-            pass
+        except cv2.error:
+            gesture_debug_log("video.capture_release_failed")
 
     @staticmethod
     def _is_stream_reachable(url: str) -> bool:
@@ -153,3 +250,11 @@ class VideoStreamService:
                 return bool(getattr(response, "status", 200) < 500)
         except (TimeoutError, URLError, OSError):
             return False
+
+    @staticmethod
+    def _coerce_source(source: VideoSourceSpec | str | int) -> VideoSourceSpec:
+        if isinstance(source, VideoSourceSpec):
+            return source
+        if isinstance(source, int):
+            return VideoSourceSpec.webcam(source)
+        return VideoSourceSpec.mjpeg(str(source))

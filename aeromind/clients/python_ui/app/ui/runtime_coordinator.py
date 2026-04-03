@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from time import time
+from time import monotonic, time
 from typing import Any, Callable
 
 from PySide6.QtCore import QThread
@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread
 from app.config import AppConfig
 from app.controllers.app_controller import AppController
 from app.models.app_state import AppState
+from app.models.video_source import VideoSourceSpec
 from app.services.api_client import ApiClientError
 from app.services.gesture_inference_service import GestureInferenceService
 from app.services.gesture_logger import GestureLogger
@@ -40,6 +41,12 @@ class ClientRuntimeCoordinator:
         self.video_service = video_service
         self._last_motion_probe: dict[str, object] | None = None
         self._started = False
+        self._selected_video_mode: str | None = None
+        self._latest_gesture_frame: object | None = None
+        self._dropped_gesture_frames = 0
+        self._inference_frames_since_log = 0
+        self._inference_total_duration_ms = 0.0
+        self._last_inference_perf_log_at = monotonic()
 
         self.status_thread = QThread(parent)
         self.status_thread.setObjectName("status-thread")
@@ -56,10 +63,12 @@ class ClientRuntimeCoordinator:
         self.video_thread.setObjectName("video-thread")
         self.video_worker = VideoWorker(
             self.video_service,
-            self.config.video_url,
+            self._video_source_for_mode(None),
             self.config.video_reconnect_delay_ms,
             read_interval_ms=self.config.video_read_interval_ms,
             drop_frames_on_reconnect=self.config.video_drop_frames_on_reconnect,
+            inference_emit_interval_ms=self.config.gesture_inference_interval_ms(),
+            perf_log_interval_ms=self.config.performance_log_interval_ms,
         )
         self.video_worker.moveToThread(self.video_thread)
         self.video_thread.started.connect(self.video_worker.start)
@@ -115,8 +124,38 @@ class ClientRuntimeCoordinator:
         self.app_controller.gesture_controller.disable()
         self.app_state.gesture_enabled = False
         self.app_controller.rc_controller.reset()
+        self._selected_video_mode = None
+        self.clear_pending_gesture_frames()
+        self.select_video_source(mode=None, reason="runtime_reset")
         self.video_service.close()
         self.app_state.reset_runtime_state()
+
+    def enqueue_gesture_frame(self, frame: object) -> None:
+        if self._latest_gesture_frame is not None:
+            self._dropped_gesture_frames += 1
+        self._latest_gesture_frame = frame
+
+    def clear_pending_gesture_frames(self) -> None:
+        self._latest_gesture_frame = None
+        self._dropped_gesture_frames = 0
+
+    def process_pending_gesture_frame(
+        self,
+        *,
+        on_api_error: Callable[[str], None],
+    ) -> dict[str, str | float | bool | None] | None:
+        frame = self._latest_gesture_frame
+        if frame is None:
+            self._emit_inference_perf_if_due()
+            return None
+        self._latest_gesture_frame = None
+        started_at = monotonic()
+        debug_state = self.process_gesture_frame(frame, on_api_error=on_api_error)
+        duration_ms = (monotonic() - started_at) * 1000.0
+        self._inference_frames_since_log += 1
+        self._inference_total_duration_ms += duration_ms
+        self._emit_inference_perf_if_due()
+        return debug_state
 
     def process_gesture_frame(
         self,
@@ -269,6 +308,7 @@ class ClientRuntimeCoordinator:
         telemetry = self.telemetry_service.build_telemetry(status_data, state_data, diag_data)
         self.app_state.mark_connected(telemetry.mode, sdk_mode_ready=telemetry.sdk_mode_ready)
         self.app_state.update_from_telemetry(telemetry)
+        self.select_video_source(mode=telemetry.mode, reason="status_update")
         self._maybe_log_motion_observed(previous_mode, previous_height)
 
     def apply_status_error(self, error_text: str) -> None:
@@ -280,8 +320,38 @@ class ClientRuntimeCoordinator:
     def call_api(self, action: Callable[[], Any], *, on_api_error: Callable[[str], None], suppress_noop: bool = False) -> Any:
         return self._call_api(action, on_api_error=on_api_error, suppress_noop=suppress_noop)
 
+    def start_sim_mode(self, *, on_api_error: Callable[[str], None]) -> Any:
+        result = self._call_api(self.app_controller.command_controller.start_sim, on_api_error=on_api_error)
+        if result is not None:
+            self.select_video_source(mode="sim", reason="start_sim")
+        return result
+
+    def start_drone_mode(self, *, on_api_error: Callable[[str], None]) -> Any:
+        result = self._call_api(self.app_controller.command_controller.start_drone, on_api_error=on_api_error)
+        if result is not None:
+            self.select_video_source(mode="drone", reason="start_drone")
+        return result
+
     def current_drone_state(self) -> str:
         return self.app_state.mode if self.app_state.mode else "--"
+
+    def select_video_source(self, *, mode: str | None, reason: str) -> None:
+        normalized_mode = self._normalize_mode(mode)
+        source = self._video_source_for_mode(normalized_mode)
+        if source is None:
+            return
+        if self._selected_video_mode == normalized_mode:
+            return
+        self._selected_video_mode = normalized_mode
+        gesture_debug_log(
+            "video.mode_selected",
+            mode=normalized_mode or "--",
+            reason=reason,
+            source_kind=source.kind,
+            source_value=source.value,
+            source_label=source.label,
+        )
+        self.video_worker.set_source(source, mode=normalized_mode, reason=reason)
 
     def _call_api(
         self,
@@ -405,3 +475,45 @@ class ClientRuntimeCoordinator:
         if isinstance(value, (int, float)):
             return float(value)
         return None
+
+    def _emit_inference_perf_if_due(self) -> None:
+        now = monotonic()
+        elapsed_ms = (now - self._last_inference_perf_log_at) * 1000.0
+        if elapsed_ms < self.config.performance_log_interval_ms:
+            return
+        fps = self._inference_frames_since_log / max(0.001, elapsed_ms / 1000.0)
+        avg_processing_ms = (
+            self._inference_total_duration_ms / self._inference_frames_since_log
+            if self._inference_frames_since_log > 0
+            else 0.0
+        )
+        gesture_debug_log(
+            "performance.inference",
+            inference_fps=f"{fps:.2f}",
+            average_processing_ms=f"{avg_processing_ms:.2f}",
+            dropped_frame_count=self._dropped_gesture_frames,
+            pending_frame=1 if self._latest_gesture_frame is not None else 0,
+        )
+        self._inference_frames_since_log = 0
+        self._inference_total_duration_ms = 0.0
+        self._dropped_gesture_frames = 0
+        self._last_inference_perf_log_at = now
+
+    def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec | None:
+        normalized_mode = self._normalize_mode(mode)
+        if normalized_mode == "sim":
+            return self.config.sim_video_source()
+        if normalized_mode == "drone":
+            return self.config.drone_video_source()
+        if normalized_mode is None:
+            return self.config.drone_video_source()
+        return None
+
+    @staticmethod
+    def _normalize_mode(mode: str | None) -> str | None:
+        if mode is None:
+            return None
+        normalized = str(mode).strip().lower()
+        if not normalized or normalized == "--":
+            return None
+        return normalized

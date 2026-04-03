@@ -40,6 +40,11 @@ class Logger:
         self._file = path.open("w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=header)
         self._writer.writeheader()
+        self._file.flush()
+        try:
+            os.fsync(self._file.fileno())
+        except OSError:
+            pass
 
     def log(self, row: dict) -> None:
         self._writer.writerow(row)
