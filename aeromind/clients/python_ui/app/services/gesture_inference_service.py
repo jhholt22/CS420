@@ -52,6 +52,9 @@ class GestureInferenceResult:
     confidence: float | None
     command_name: str | None
     queue_state: str
+    stable_hits: int
+    required_hits: int
+    required_confidence: float
     detector_available: bool
     detector_status: DetectorStatus
     detector_error: str | None
@@ -79,12 +82,16 @@ class GestureInferenceService:
         min_confidence: float = _DEFAULT_MIN_CONFIDENCE,
         noise_confidence_floor: float = 0.60,
         max_num_hands: int = 1,
+        debug_bypass_stability: bool = False,
+        debug_bypass_min_confidence: float = 0.55,
     ) -> None:
         self.stability_frames = max(1, int(stability_frames))
         self.dominance_frames = max(1, min(self.stability_frames, int(dominance_frames)))
         self.min_confidence = max(0.0, min(1.0, float(min_confidence)))
         self.noise_confidence_floor = max(0.0, min(1.0, float(noise_confidence_floor)))
         self.max_num_hands = max(1, int(max_num_hands))
+        self.debug_bypass_stability = bool(debug_bypass_stability)
+        self.debug_bypass_min_confidence = max(0.0, min(1.0, float(debug_bypass_min_confidence)))
         self._history: Deque[str | None] = deque(maxlen=self.stability_frames)
         self._gesture_command_map = dict(self._GESTURE_COMMAND_MAP)
         self._enabled_gesture_commands = {
@@ -114,6 +121,8 @@ class GestureInferenceService:
                 module=self.__class__.__module__,
                 class_id=id(self.__class__),
                 initialize_called=True,
+                debug_bypass_stability=self.debug_bypass_stability,
+                debug_bypass_min_confidence=self.debug_bypass_min_confidence,
             )
             self.__class__._INIT_LOGGED = True
 
@@ -214,6 +223,9 @@ class GestureInferenceService:
                 confidence=None,
                 command_name=None,
                 queue_state="detecting",
+                stable_hits=0,
+                required_hits=self.dominance_frames,
+                required_confidence=self.min_confidence,
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
                 detector_error=self._detector_error,
@@ -240,6 +252,9 @@ class GestureInferenceService:
                 confidence=confidence,
                 command_name=None,
                 queue_state="detecting",
+                stable_hits=0,
+                required_hits=self.dominance_frames,
+                required_confidence=self.min_confidence,
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
                 detector_error=self._detector_error,
@@ -265,6 +280,9 @@ class GestureInferenceService:
                 confidence=confidence,
                 command_name=None,
                 queue_state="low_confidence",
+                stable_hits=0,
+                required_hits=self.dominance_frames,
+                required_confidence=self.min_confidence,
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
                 detector_error=self._detector_error,
@@ -273,7 +291,12 @@ class GestureInferenceService:
 
         self._history.append(raw_gesture)
         stable_gesture, stable_hits = self._stabilize_gesture(with_count=True)
-        command_name, queue_state = self._resolve_command(stable_gesture, stable_hits, confidence)
+        command_name, queue_state, required_hits, required_confidence = self._resolve_command(
+            raw_gesture,
+            stable_gesture,
+            stable_hits,
+            confidence,
+        )
         gesture_debug_log(
             "inference.resolved",
             raw_gesture=raw_gesture,
@@ -282,6 +305,9 @@ class GestureInferenceService:
             resolved_command=command_name,
             queue_state=queue_state,
             stable_hits=stable_hits,
+            required_hits=required_hits,
+            required_confidence=required_confidence,
+            debug_bypass_stability=self.debug_bypass_stability,
             detector_available=self._detector_available,
             detector_status=self._detector_status,
         )
@@ -292,6 +318,9 @@ class GestureInferenceService:
             confidence=confidence,
             command_name=command_name,
             queue_state=queue_state,
+            stable_hits=stable_hits,
+            required_hits=required_hits,
+            required_confidence=required_confidence,
             detector_available=self._detector_available,
             detector_status=self._detector_status,
             detector_error=self._detector_error,
@@ -415,6 +444,9 @@ class GestureInferenceService:
             confidence=None,
             command_name=None,
             queue_state=queue_state,
+            stable_hits=0,
+            required_hits=self.dominance_frames,
+            required_confidence=self.min_confidence,
             detector_available=self._detector_available,
             detector_status=self._detector_status,
             detector_error=self._detector_error,
@@ -528,25 +560,30 @@ class GestureInferenceService:
 
     def _resolve_command(
         self,
+        raw_gesture: str | None,
         stable_gesture: str | None,
         stable_hits: int,
         confidence: float | None,
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str | None, str, int, float]:
         if stable_gesture is None:
-            return None, "stabilizing"
+            if self.debug_bypass_stability:
+                bypass_command = self._resolve_debug_bypass_command(raw_gesture, confidence)
+                if bypass_command is not None:
+                    return bypass_command, "debug_bypass", 1, self.debug_bypass_min_confidence
+            return None, "stabilizing", self.dominance_frames, self.min_confidence
 
         if confidence is None or confidence < self.min_confidence:
-            return None, "low_confidence"
+            return None, "low_confidence", self.dominance_frames, self.min_confidence
 
         if stable_gesture in self._NEUTRAL_GESTURES:
-            return None, "neutral"
+            return None, "neutral", self.dominance_frames, self.min_confidence
 
         if stable_gesture not in self._enabled_gesture_commands:
-            return None, "disabled"
+            return None, "disabled", self.dominance_frames, self.min_confidence
 
         command_name = self._gesture_command_map.get(stable_gesture)
         if not command_name:
-            return None, "stabilizing"
+            return None, "stabilizing", self.dominance_frames, self.min_confidence
 
         safety_rule = self._gesture_safety_rules.get(stable_gesture, {})
         default_hits = self.stability_frames if command_name in self._ONE_SHOT_COMMANDS else self.dominance_frames
@@ -554,11 +591,22 @@ class GestureInferenceService:
         min_confidence = float(safety_rule.get("min_confidence", default_confidence))
         required_hits = int(safety_rule.get("required_hits", default_hits))
 
+        if self.debug_bypass_stability and confidence >= self.debug_bypass_min_confidence:
+            return command_name, "debug_bypass", required_hits, min_confidence
         if confidence < min_confidence:
-            return None, "guarded"
+            return None, "guarded", required_hits, min_confidence
         if stable_hits < required_hits:
-            return None, "stabilizing"
-        return command_name, "ready"
+            return None, "stabilizing", required_hits, min_confidence
+        return command_name, "ready", required_hits, min_confidence
+
+    def _resolve_debug_bypass_command(self, raw_gesture: str | None, confidence: float | None) -> str | None:
+        if not self.debug_bypass_stability:
+            return None
+        if raw_gesture is None or confidence is None or confidence < self.debug_bypass_min_confidence:
+            return None
+        if raw_gesture in self._NEUTRAL_GESTURES or raw_gesture not in self._enabled_gesture_commands:
+            return None
+        return self._gesture_command_map.get(raw_gesture)
 
     @classmethod
     def get_threshold_for_gesture(cls, stable_gesture: str | None) -> float:

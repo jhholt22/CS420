@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from threading import Lock
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 from PySide6.QtCore import QObject, Signal
@@ -31,6 +31,7 @@ class VideoWorker(QObject):
         drop_frames_on_reconnect: int = 3,
         inference_emit_interval_ms: int = 100,
         perf_log_interval_ms: int = 5000,
+        frame_sink: Callable[[Any], None] | None = None,
     ) -> None:
         super().__init__()
         self.video_service = video_service
@@ -42,6 +43,7 @@ class VideoWorker(QObject):
         self.drop_frames_on_reconnect = max(0, drop_frames_on_reconnect)
         self.inference_emit_interval_ms = inference_emit_interval_ms if inference_emit_interval_ms > 0 else 100
         self.perf_log_interval_ms = perf_log_interval_ms if perf_log_interval_ms > 0 else 5000
+        self.frame_sink = frame_sink
         self._running = False
         self._last_status: str | None = None
         self._logged_first_good_frame = False
@@ -153,7 +155,19 @@ class VideoWorker(QObject):
             self._emit_performance_log_if_due()
 
             if self._should_emit_inference_frame():
-                self.rawFrameReady.emit(frame.copy())
+                inference_frame = frame.copy()
+                try:
+                    if self.frame_sink is not None:
+                        self.frame_sink(inference_frame)
+                    else:
+                        self.rawFrameReady.emit(inference_frame)
+                except Exception as exc:
+                    gesture_debug_log(
+                        "thread.worker_error",
+                        worker="video",
+                        stage="frame_sink",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
 
             if not self._running:
                 return True

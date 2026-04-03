@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import time
+
+from app.utils.logging_utils import gesture_debug_log
+
+
+@dataclass(slots=True)
+class _CsvTarget:
+    name: str
+    path: Path
+    file: object
+    writer: csv.DictWriter
 
 
 class GestureLogger:
     _LOG_DIR = Path("data/logs")
     _DEFAULT_FILENAME = "gesture_research_logs.csv"
+    _RUN_FILENAME_TEMPLATE = "run_{run_id}.csv"
     _FIELDS = [
         "run_id",
         "ts_ms",
@@ -50,14 +62,19 @@ class GestureLogger:
         self._pending_rows = 0
         root_path = Path(__file__).resolve().parents[4]
         default_log_path = root_path / self._LOG_DIR / self._DEFAULT_FILENAME
+        self._run_log_path = root_path / self._LOG_DIR / self._RUN_FILENAME_TEMPLATE.format(run_id=self.run_id)
         self._log_path = Path(log_path) if log_path is not None else default_log_path
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_exists = self._log_path.exists()
-        self._file = self._log_path.open("a", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=self._FIELDS)
-        if not file_exists or self._log_path.stat().st_size == 0:
-            self._writer.writeheader()
-            self._file.flush()
+        self._targets: list[_CsvTarget] = [
+            self._open_target("aggregate", self._log_path),
+            self._open_target("run", self._run_log_path),
+        ]
+        gesture_debug_log(
+            "gesture_logger.targets_initialized",
+            aggregate_path=self._log_path,
+            run_path=self._run_log_path,
+            run_id=self.run_id,
+        )
 
     @staticmethod
     def _now_ms() -> int:
@@ -101,16 +118,20 @@ class GestureLogger:
             return text
 
     def close(self) -> None:
-        if getattr(self, "_file", None) is None:
+        targets = getattr(self, "_targets", None)
+        if not targets:
             return
         self.flush()
-        self._file.close()
-        self._file = None
+        for target in targets:
+            target.file.close()
+        self._targets = []
 
     def flush(self) -> None:
-        if getattr(self, "_file", None) is None:
+        targets = getattr(self, "_targets", None)
+        if not targets:
             return
-        self._file.flush()
+        for target in targets:
+            target.file.flush()
         self._pending_rows = 0
 
     def set_current_label(self, label: str) -> None:
@@ -368,7 +389,46 @@ class GestureLogger:
             "e2e_latency_ms": self._normalize_int(e2e_latency_ms),
             "notes": self._notes if notes is None else self._normalize_optional_text(notes),
         }
-        self._writer.writerow(row)
+        self._append_row(row)
         self._pending_rows += 1
         if self._pending_rows >= self._flush_every_rows:
             self.flush()
+
+    def _open_target(self, name: str, path: Path) -> _CsvTarget:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = path.exists()
+        file = path.open("a", newline="", encoding="utf-8")
+        writer = csv.DictWriter(file, fieldnames=self._FIELDS)
+        header_written = False
+        if not file_exists or path.stat().st_size == 0:
+            writer.writeheader()
+            file.flush()
+            header_written = True
+        gesture_debug_log(
+            "gesture_logger.target_opened",
+            target=name,
+            path=path,
+            header_written=header_written,
+        )
+        return _CsvTarget(name=name, path=path, file=file, writer=writer)
+
+    def _append_row(self, row: dict[str, str]) -> None:
+        for target in self._targets:
+            try:
+                target.writer.writerow(row)
+                gesture_debug_log(
+                    "gesture_logger.row_appended",
+                    target=target.name,
+                    path=target.path,
+                    event_type=row.get("event_type", "-"),
+                    run_id=row.get("run_id", "-"),
+                )
+            except Exception as exc:
+                gesture_debug_log(
+                    "gesture_logger.write_failed",
+                    target=target.name,
+                    path=target.path,
+                    event_type=row.get("event_type", "-"),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise

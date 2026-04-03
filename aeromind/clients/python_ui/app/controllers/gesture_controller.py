@@ -64,6 +64,8 @@ class GestureController:
         self._detector_status = "detector_unavailable"
         self._detector_error: str | None = None
         self._detector_model_path: str | None = None
+        self._required_hits = 0
+        self._required_confidence = 0.0
 
         self._last_stable_gesture_name: str | None = None
         self._stable_since = 0.0
@@ -101,6 +103,8 @@ class GestureController:
         self._detector_status = result.detector_status
         self._detector_error = result.detector_error
         self._detector_model_path = result.detector_model_path
+        self._required_hits = result.required_hits
+        self._required_confidence = result.required_confidence
 
         now = monotonic()
 
@@ -158,19 +162,27 @@ class GestureController:
             "controller.updated",
             raw_gesture=self._raw_gesture,
             stable_gesture=self._stable_gesture,
-                confidence=self._confidence,
-                resolved_command=self._pending_command,
-                queue_state=self._queue_state,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-            )
+            confidence=self._confidence,
+            resolved_command=self._pending_command,
+            queue_state=self._queue_state,
+            stable_hits=result.stable_hits,
+            required_hits=self._required_hits,
+            required_confidence=self._required_confidence,
+            detector_available=self._detector_available,
+            detector_status=self._detector_status,
+        )
         return self.get_debug_state()
 
     def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
-        debug_state = self.update_from_result(result)
+        debug_state = dict(self.update_from_result(result))
         command_name = result.command_name
         dispatch_allowed = self.should_dispatch_command(command_name)
         block_reason = "-" if dispatch_allowed else self.normalize_block_reason(command_name)
+        debug_state["resolved_command"] = command_name
+        debug_state["dispatch_allowed"] = dispatch_allowed
+        debug_state["block_reason"] = block_reason
+        debug_state["inference_queue_state"] = result.queue_state
+        debug_state["controller_queue_state"] = self._queue_state
         return GestureDispatchDecision(
             command_name=command_name,
             dispatch_allowed=dispatch_allowed,
@@ -352,6 +364,8 @@ class GestureController:
             "detector_model_path": self._detector_model_path,
             "stable_ms": self.get_stable_ms(),
             "threshold": self.get_threshold_for_gesture(self._last_stable_gesture_name),
+            "required_hits": self._required_hits,
+            "required_confidence": self._required_confidence,
         }
 
     def _update_oneshot_release_candidate(self, *, result: GestureInferenceResult, now: float) -> None:

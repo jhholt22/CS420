@@ -15,6 +15,7 @@ from app.services.gesture_logger import GestureLogger
 from app.services.telemetry_service import TelemetryService
 from app.services.video_stream_service import VideoStreamService
 from app.utils.logging_utils import gesture_debug_log
+from app.workers.inference_worker import InferenceUpdate, InferenceWorker, LatestFrameBuffer
 from app.workers.status_worker import StatusWorker
 from app.workers.video_worker import VideoWorker
 
@@ -42,11 +43,7 @@ class ClientRuntimeCoordinator:
         self._last_motion_probe: dict[str, object] | None = None
         self._started = False
         self._selected_video_mode: str | None = None
-        self._latest_gesture_frame: object | None = None
-        self._dropped_gesture_frames = 0
-        self._inference_frames_since_log = 0
-        self._inference_total_duration_ms = 0.0
-        self._last_inference_perf_log_at = monotonic()
+        self._inference_frame_buffer = LatestFrameBuffer(self.config.inference_max_pending_frames)
 
         self.status_thread = QThread(parent)
         self.status_thread.setObjectName("status-thread")
@@ -69,6 +66,7 @@ class ClientRuntimeCoordinator:
             drop_frames_on_reconnect=self.config.video_drop_frames_on_reconnect,
             inference_emit_interval_ms=self.config.gesture_inference_interval_ms(),
             perf_log_interval_ms=self.config.performance_log_interval_ms,
+            frame_sink=self._inference_frame_buffer.submit,
         )
         self.video_worker.moveToThread(self.video_thread)
         self.video_thread.started.connect(self.video_worker.start)
@@ -78,17 +76,35 @@ class ClientRuntimeCoordinator:
         self.video_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="video"))
         self.video_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="video"))
 
+        self.inference_thread = QThread(parent)
+        self.inference_thread.setObjectName("inference-thread")
+        self.inference_worker = InferenceWorker(
+            self.gesture_inference_service,
+            self._inference_frame_buffer,
+            input_width=self.config.inference_input_width,
+            input_height=self.config.inference_input_height,
+            process_every_nth_frame=self.config.inference_process_every_nth_frame,
+            perf_log_interval_ms=self.config.performance_log_interval_ms,
+        )
+        self.inference_worker.moveToThread(self.inference_thread)
+        self.inference_thread.started.connect(self.inference_worker.start)
+        self.inference_worker.workerFinished.connect(self.inference_thread.quit)
+        self.inference_thread.finished.connect(self.inference_worker.deleteLater)
+        self.inference_thread.finished.connect(lambda: gesture_debug_log("thread.quit", thread="inference"))
+        self.inference_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="inference"))
+        self.inference_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="inference"))
+
     def connect_workers(
         self,
         *,
         on_frame_ready: Callable[[object], None],
-        on_raw_frame_ready: Callable[[object], None],
+        on_inference_ready: Callable[[object], None],
         on_stream_status_changed: Callable[[str], None],
         on_status_updated: Callable[[dict, object, dict], None],
         on_status_error: Callable[[str], None],
     ) -> None:
         self.video_worker.frameReady.connect(on_frame_ready)
-        self.video_worker.rawFrameReady.connect(on_raw_frame_ready)
+        self.inference_worker.inferenceReady.connect(on_inference_ready)
         self.video_worker.streamStatusChanged.connect(on_stream_status_changed)
         self.status_worker.statusUpdated.connect(on_status_updated)
         self.status_worker.statusError.connect(on_status_error)
@@ -97,25 +113,34 @@ class ClientRuntimeCoordinator:
         if self._started:
             gesture_debug_log("thread.runtime_start_skipped", reason="already_started")
             return
-        gesture_debug_log("thread.runtime_start", status_thread_running=self.status_thread.isRunning(), video_thread_running=self.video_thread.isRunning())
+        gesture_debug_log(
+            "thread.runtime_start",
+            status_thread_running=self.status_thread.isRunning(),
+            video_thread_running=self.video_thread.isRunning(),
+            inference_thread_running=self.inference_thread.isRunning(),
+        )
         self.status_thread.start()
         self.video_thread.start()
+        self.inference_thread.start()
         self._started = True
 
     def stop(self) -> None:
-        if not self._started and not self.status_thread.isRunning() and not self.video_thread.isRunning():
+        if not self._started and not self.status_thread.isRunning() and not self.video_thread.isRunning() and not self.inference_thread.isRunning():
             gesture_debug_log("thread.runtime_stop_skipped", reason="already_stopped")
             return
         gesture_debug_log("thread.runtime_stop_requested")
         self._safe_stop_worker(self.status_worker)
         self._safe_stop_worker(self.video_worker)
+        self._safe_stop_worker(self.inference_worker)
         self._safe_quit_thread(self.status_thread, 5000)
         self._safe_quit_thread(self.video_thread, 5000)
+        self._safe_quit_thread(self.inference_thread, 5000)
         self._started = False
         gesture_debug_log(
             "thread.cleanup_completed",
             status_thread_running=self.status_thread.isRunning(),
             video_thread_running=self.video_thread.isRunning(),
+            inference_thread_running=self.inference_thread.isRunning(),
         )
 
     def reset_runtime_state(self) -> None:
@@ -130,58 +155,50 @@ class ClientRuntimeCoordinator:
         self.video_service.close()
         self.app_state.reset_runtime_state()
 
-    def enqueue_gesture_frame(self, frame: object) -> None:
-        if self._latest_gesture_frame is not None:
-            self._dropped_gesture_frames += 1
-        self._latest_gesture_frame = frame
-
     def clear_pending_gesture_frames(self) -> None:
-        self._latest_gesture_frame = None
-        self._dropped_gesture_frames = 0
+        self._inference_frame_buffer.clear()
 
-    def process_pending_gesture_frame(
+    def process_inference_update(
         self,
+        update: InferenceUpdate,
         *,
         on_api_error: Callable[[str], None],
     ) -> dict[str, str | float | bool | None] | None:
-        frame = self._latest_gesture_frame
-        if frame is None:
-            self._emit_inference_perf_if_due()
-            return None
-        self._latest_gesture_frame = None
-        started_at = monotonic()
-        debug_state = self.process_gesture_frame(frame, on_api_error=on_api_error)
-        duration_ms = (monotonic() - started_at) * 1000.0
-        self._inference_frames_since_log += 1
-        self._inference_total_duration_ms += duration_ms
-        self._emit_inference_perf_if_due()
-        return debug_state
-
-    def process_gesture_frame(
-        self,
-        frame: object,
-        *,
-        on_api_error: Callable[[str], None],
-    ) -> dict[str, str | float | bool | None] | None:
+        frame_id = self.gesture_logger.next_frame_id()
         try:
-            result = self.gesture_inference_service.process_frame(frame)
+            result = update.result
             self.app_state.set_detector_state(
                 ready=result.detector_status == "detector_ready",
                 error_reason=result.detector_error if result.detector_status != "detector_ready" else None,
             )
             decision = self.app_controller.gesture_controller.evaluate_result(result)
             debug_state = decision.debug_state
-            frame_id = self.gesture_logger.next_frame_id()
             stable_ms = self._as_int(debug_state.get("stable_ms"))
             threshold = self._as_float(debug_state.get("threshold"))
+            required_confidence = self._as_float(debug_state.get("required_confidence"))
+            required_hits = self._as_int(debug_state.get("required_hits"))
+            ui_shown = bool(result.raw_gesture or result.stable_gesture)
             gesture_debug_log(
-                "mainwindow.frame_processed",
+                "gesture.pipeline_trace",
                 frame_id=frame_id,
                 raw_gesture=result.raw_gesture,
                 stable_gesture=result.stable_gesture,
                 confidence=result.confidence,
                 resolved_command=decision.command_name,
-                queue_state=debug_state.get("queue_state"),
+                threshold=threshold,
+                stable_ms=stable_ms,
+                stable_hits=result.stable_hits,
+                required_hits=required_hits,
+                required_confidence=required_confidence,
+                inference_queue_state=result.queue_state,
+                controller_queue_state=debug_state.get("controller_queue_state"),
+                block_reason=decision.block_reason,
+                ui_shown=ui_shown,
+                dispatch_allowed=decision.dispatch_allowed,
+                dispatch_attempted=False,
+                freshness_ms=update.freshness_ms,
+                processing_ms=f"{update.processing_ms:.2f}",
+                inference_shape=update.inference_shape,
                 detector_available=result.detector_available,
             )
             self.gesture_logger.log_gesture_event(
@@ -208,7 +225,10 @@ class ClientRuntimeCoordinator:
                     stable_gesture=result.stable_gesture,
                     confidence=result.confidence,
                     resolved_command=command_name,
-                    queue_state=debug_state.get("queue_state"),
+                    threshold=threshold,
+                    stable_ms=stable_ms,
+                    block_reason=decision.block_reason,
+                    dispatch_attempted=True,
                     detector_available=result.detector_available,
                 )
                 dispatch_result = self._call_api(
@@ -224,7 +244,10 @@ class ClientRuntimeCoordinator:
                     stable_gesture=result.stable_gesture,
                     confidence=result.confidence,
                     resolved_command=command_name,
+                    threshold=threshold,
+                    stable_ms=stable_ms,
                     queue_state="dispatch_ok" if dispatch_result is not None else "dispatch_failed",
+                    block_reason="-" if dispatch_result is not None else "api_dispatch_failed",
                     detector_available=result.detector_available,
                 )
                 self.gesture_logger.log_command_event(
@@ -260,7 +283,12 @@ class ClientRuntimeCoordinator:
                     stable_gesture=result.stable_gesture,
                     confidence=result.confidence,
                     resolved_command=command_name,
-                    queue_state=decision.block_reason,
+                    threshold=threshold,
+                    stable_ms=stable_ms,
+                    queue_state=debug_state.get("controller_queue_state"),
+                    block_reason=decision.block_reason,
+                    ui_shown=ui_shown,
+                    dispatch_attempted=False,
                     detector_available=result.detector_available,
                 )
                 self.gesture_logger.log_command_event(
@@ -281,6 +309,7 @@ class ClientRuntimeCoordinator:
         except ApiClientError as exc:
             gesture_debug_log(
                 "mainwindow.api_error",
+                frame_id=frame_id,
                 raw_gesture="-",
                 stable_gesture="-",
                 confidence="-",
@@ -293,6 +322,7 @@ class ClientRuntimeCoordinator:
         except Exception:
             gesture_debug_log(
                 "mainwindow.processing_error",
+                frame_id=frame_id,
                 raw_gesture="-",
                 stable_gesture="-",
                 confidence="-",
@@ -475,29 +505,6 @@ class ClientRuntimeCoordinator:
         if isinstance(value, (int, float)):
             return float(value)
         return None
-
-    def _emit_inference_perf_if_due(self) -> None:
-        now = monotonic()
-        elapsed_ms = (now - self._last_inference_perf_log_at) * 1000.0
-        if elapsed_ms < self.config.performance_log_interval_ms:
-            return
-        fps = self._inference_frames_since_log / max(0.001, elapsed_ms / 1000.0)
-        avg_processing_ms = (
-            self._inference_total_duration_ms / self._inference_frames_since_log
-            if self._inference_frames_since_log > 0
-            else 0.0
-        )
-        gesture_debug_log(
-            "performance.inference",
-            inference_fps=f"{fps:.2f}",
-            average_processing_ms=f"{avg_processing_ms:.2f}",
-            dropped_frame_count=self._dropped_gesture_frames,
-            pending_frame=1 if self._latest_gesture_frame is not None else 0,
-        )
-        self._inference_frames_since_log = 0
-        self._inference_total_duration_ms = 0.0
-        self._dropped_gesture_frames = 0
-        self._last_inference_perf_log_at = now
 
     def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec | None:
         normalized_mode = self._normalize_mode(mode)

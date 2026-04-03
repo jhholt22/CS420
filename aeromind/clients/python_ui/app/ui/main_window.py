@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
 
@@ -53,7 +52,10 @@ class MainWindow(QMainWindow):
         self.config = AppConfig()
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
-        self.gesture_inference_service = GestureInferenceService()
+        self.gesture_inference_service = GestureInferenceService(
+            debug_bypass_stability=self.config.debug_bypass_stability,
+            debug_bypass_min_confidence=self.config.debug_bypass_min_confidence,
+        )
         self.gesture_logger = GestureLogger(flush_every_rows=self.config.gesture_log_flush_rows)
         self.gesture_logger.set_session_context(
             participant_id="P001",
@@ -87,9 +89,6 @@ class MainWindow(QMainWindow):
             video_service=self.video_service,
         )
         self._connect_worker_signals()
-        self._gesture_inference_timer = QTimer(self)
-        self._gesture_inference_timer.setInterval(self.config.gesture_inference_interval_ms())
-        self._gesture_inference_timer.timeout.connect(self._process_pending_gesture_frame)
 
         self._apply_hud_defaults()
         self._apply_debug_defaults()
@@ -99,12 +98,11 @@ class MainWindow(QMainWindow):
         self._run_startup_smoke_check()
 
         self.runtime.start()
-        self._gesture_inference_timer.start()
 
     def _connect_worker_signals(self) -> None:
         self.runtime.connect_workers(
             on_frame_ready=self.video_surface.set_video_pixmap,
-            on_raw_frame_ready=self._on_raw_frame_ready,
+            on_inference_ready=self._on_inference_ready,
             on_stream_status_changed=self._on_stream_status_changed,
             on_status_updated=self._on_status_updated,
             on_status_error=self._on_status_error,
@@ -122,7 +120,6 @@ class MainWindow(QMainWindow):
 
         self._is_shutting_down = True
         gesture_debug_log("thread.window_close_started")
-        self._gesture_inference_timer.stop()
         self.runtime.stop()
         self.runtime.reset_runtime_state()
         self.gesture_logger.close()
@@ -329,22 +326,13 @@ class MainWindow(QMainWindow):
             suppress_noop=True,
         )
 
-    def _on_raw_frame_ready(self, frame: object) -> None:
-        if self._is_shutting_down:
-            return
-
-        if not self.app_controller.gesture_controller.is_enabled():
-            return
-
-        self.runtime.enqueue_gesture_frame(frame)
-
-    def _process_pending_gesture_frame(self) -> None:
+    def _on_inference_ready(self, update: object) -> None:
         if self._is_shutting_down:
             return
         if not self.app_controller.gesture_controller.is_enabled():
             self.runtime.clear_pending_gesture_frames()
             return
-        debug_state = self.runtime.process_pending_gesture_frame(on_api_error=self._on_status_error)
+        debug_state = self.runtime.process_inference_update(update, on_api_error=self._on_status_error)
         if debug_state is None:
             return
         self._sync_gesture_panel_from_state(debug_state)

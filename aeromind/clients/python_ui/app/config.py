@@ -17,6 +17,12 @@ VIDEO_BACKEND_PREFER_FFMPEG = True
 GESTURE_INFERENCE_MAX_FPS = 12
 GESTURE_LOG_FLUSH_ROWS = 50
 PERFORMANCE_LOG_INTERVAL_MS = 5000
+DEBUG_BYPASS_STABILITY = False
+DEBUG_BYPASS_MIN_CONFIDENCE = 0.55
+INFERENCE_INPUT_WIDTH = 320
+INFERENCE_INPUT_HEIGHT = 240
+INFERENCE_PROCESS_EVERY_NTH_FRAME = 1
+INFERENCE_MAX_PENDING_FRAMES = 1
 
 
 @dataclass(slots=True)
@@ -34,6 +40,12 @@ class AppConfig:
     gesture_inference_max_fps: int = GESTURE_INFERENCE_MAX_FPS
     gesture_log_flush_rows: int = GESTURE_LOG_FLUSH_ROWS
     performance_log_interval_ms: int = PERFORMANCE_LOG_INTERVAL_MS
+    debug_bypass_stability: bool = DEBUG_BYPASS_STABILITY
+    debug_bypass_min_confidence: float = DEBUG_BYPASS_MIN_CONFIDENCE
+    inference_input_width: int = INFERENCE_INPUT_WIDTH
+    inference_input_height: int = INFERENCE_INPUT_HEIGHT
+    inference_process_every_nth_frame: int = INFERENCE_PROCESS_EVERY_NTH_FRAME
+    inference_max_pending_frames: int = INFERENCE_MAX_PENDING_FRAMES
 
     def drone_video_source(self) -> VideoSourceSpec:
         return VideoSourceSpec.mjpeg(self.video_url)

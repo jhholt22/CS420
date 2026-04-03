@@ -43,7 +43,7 @@ class AppController:
         self.use_drone = use_drone
         self.server_gesture_enabled = cfg.enable_server_gesture_pipeline
 
-        self.logger = Logger(f"data/logs/run_{cfg.run_id}.csv", CSV_HEADER)
+        self.logger = Logger(f"data/logs/run_{cfg.run_id}.csv", CSV_HEADER) if self.server_gesture_enabled else None
         self.model = GestureModel() if self.server_gesture_enabled else None
         self.mapper = GestureMapper() if self.server_gesture_enabled else None
         self.safety = SafetyLayer(
@@ -146,7 +146,8 @@ class AppController:
 
         self.drone.close()
         self.mjpeg.stop()
-        self.logger.close()
+        if self.logger is not None:
+            self.logger.close()
 
         log("[APP]", "Stopped")
 
@@ -327,6 +328,8 @@ class AppController:
             self._video_restart_lock.release()
 
     def _log_frame(self, ts_ms: int, pred: Any, cand: Any, decision: SafetyDecision) -> None:
+        if self.logger is None:
+            return
         self.logger.log({
             "run_id": self.cfg.run_id,
             "ts_ms": ts_ms,
