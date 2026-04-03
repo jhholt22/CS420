@@ -9,10 +9,9 @@ import pandas as pd
 
 
 GESTURE_TO_COMMAND = {
-    "open_palm": "takeoff",
+    "open_palm": "stop",
     "fist": "land",
-    "thumbs_up": "up",
-    "thumbs_down": "down",
+    "thumbs_up": "takeoff",
     "point_up": "forward",
 }
 

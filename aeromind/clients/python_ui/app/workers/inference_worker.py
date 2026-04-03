@@ -102,6 +102,9 @@ class InferenceWorker(QObject):
         self._processing_total_ms = 0.0
         self._last_freshness_ms = 0
         self._perf_window_started_at = monotonic()
+        self._last_input_shape: tuple[int, ...] | None = None
+        self._last_inference_shape: tuple[int, ...] | None = None
+        self._last_logged_resize_shapes: tuple[tuple[int, ...] | None, tuple[int, ...] | None] | None = None
 
     def start(self) -> None:
         if self._running:
@@ -132,6 +135,16 @@ class InferenceWorker(QObject):
                 input_shape = getattr(frame, "shape", None)
                 inference_frame = self._prepare_inference_frame(frame)
                 inference_shape = getattr(inference_frame, "shape", None)
+                self._last_input_shape = input_shape
+                self._last_inference_shape = inference_shape
+                resize_shapes = (input_shape, inference_shape)
+                if resize_shapes != self._last_logged_resize_shapes:
+                    gesture_debug_log(
+                        "inference.resize_path",
+                        original_frame_size=input_shape,
+                        inference_frame_size=inference_shape,
+                    )
+                    self._last_logged_resize_shapes = resize_shapes
 
                 started_at = monotonic()
                 try:
@@ -177,12 +190,17 @@ class InferenceWorker(QObject):
         current_shape = getattr(frame, "shape", None)
         if not isinstance(current_shape, tuple) or len(current_shape) < 2:
             return frame
-        target_width = self.input_width or int(current_shape[1])
-        target_height = self.input_height or int(current_shape[0])
-        if current_shape[1] == target_width and current_shape[0] == target_height:
+        source_height = int(current_shape[0])
+        source_width = int(current_shape[1])
+        target_width = self.input_width or source_width
+        target_height = self.input_height or source_height
+        scale = min(target_width / max(1, source_width), target_height / max(1, source_height), 1.0)
+        resized_width = max(1, int(source_width * scale))
+        resized_height = max(1, int(source_height * scale))
+        if source_width == resized_width and source_height == resized_height:
             return frame
         try:
-            return cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+            return cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_AREA)
         except cv2.error as exc:
             gesture_debug_log(
                 "thread.worker_error",
@@ -190,8 +208,8 @@ class InferenceWorker(QObject):
                 stage="resize",
                 error=f"{type(exc).__name__}: {exc}",
                 input_shape=current_shape,
-                target_width=target_width,
-                target_height=target_height,
+                target_width=resized_width,
+                target_height=resized_height,
             )
             return frame
 
@@ -211,6 +229,9 @@ class InferenceWorker(QObject):
             "performance.inference",
             inference_fps=f"{inference_fps:.2f}",
             average_inference_ms=f"{average_processing_ms:.2f}",
+            effective_inference_fps=f"{inference_fps:.2f}",
+            original_frame_size=self._last_input_shape,
+            inference_frame_size=self._last_inference_shape,
             dropped_frame_count=dropped_frames,
             skipped_frame_count=self._skipped_frames_since_log,
             pending_frame_count=self.frame_buffer.pending_count(),

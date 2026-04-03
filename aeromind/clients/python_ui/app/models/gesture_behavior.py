@@ -45,34 +45,6 @@ GESTURE_BEHAVIOR_CONFIG: dict[str, GestureBehavior] = {
         cooldown_ms=700,
         requires_release=False,
     ),
-    "point_left": GestureBehavior(
-        gesture="point_left",
-        command="left",
-        behavior_type="repeatable",
-        cooldown_ms=700,
-        requires_release=False,
-    ),
-    "point_right": GestureBehavior(
-        gesture="point_right",
-        command="right",
-        behavior_type="repeatable",
-        cooldown_ms=700,
-        requires_release=False,
-    ),
-    "l_shape_right": GestureBehavior(
-        gesture="l_shape_right",
-        command="rotate_right",
-        behavior_type="repeatable",
-        cooldown_ms=850,
-        requires_release=False,
-    ),
-    "l_shape_left": GestureBehavior(
-        gesture="l_shape_left",
-        command="rotate_left",
-        behavior_type="repeatable",
-        cooldown_ms=850,
-        requires_release=False,
-    ),
 }
 
 
@@ -83,4 +55,3 @@ def get_gesture_behavior(gesture_name: str | None) -> GestureBehavior | None:
     if not normalized:
         return None
     return GESTURE_BEHAVIOR_CONFIG.get(normalized)
-

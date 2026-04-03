@@ -19,8 +19,9 @@ class GestureDispatchDecision:
 class GestureController:
     """Maps stabilized gestures to command behaviors through one decision path."""
 
-    def __init__(self) -> None:
+    def __init__(self, release_window_ms: int = 180) -> None:
         self._enabled = False
+        self._release_window_ms = max(0, int(release_window_ms))
         self.reset()
 
     def enable(self) -> None:
@@ -64,6 +65,7 @@ class GestureController:
         self._active_repeatable_command: str | None = None
         self._armed_oneshot_command: str | None = None
         self._armed_oneshot_gesture: str | None = None
+        self._release_started_at = 0.0
 
     def update_from_result(self, result: GestureInferenceResult) -> dict[str, str | float | bool | None]:
         if not self._enabled:
@@ -93,12 +95,14 @@ class GestureController:
             self._active_repeatable_command = None
         self._last_active_gesture = current_marker
 
-        self._maybe_release_oneshot(result)
+        self._maybe_release_oneshot(result, now=now)
         return self.get_debug_state()
 
     def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
         debug_state = dict(self.update_from_result(result))
         behavior = get_gesture_behavior(result.stable_gesture)
+        if behavior is None and result.command_name and (result.raw_gesture or "").strip().lower() == "open_palm":
+            behavior = get_gesture_behavior(result.raw_gesture)
         command_name = behavior.command if behavior is not None else result.command_name
         behavior_type = behavior.behavior_type if behavior is not None else None
         now = monotonic()
@@ -244,6 +248,7 @@ class GestureController:
             "last_command_sent": self._last_command_sent,
             "last_command_timestamp": int(self._last_command_timestamp * 1000.0) if self._last_command_timestamp else None,
             "active_repeatable_command": self._active_repeatable_command,
+            "release_window_ms": self._release_window_ms,
         }
 
     def _decide_behavior_action(
@@ -257,7 +262,7 @@ class GestureController:
         if behavior.behavior_type == "safety":
             if self._last_dispatched_gesture == behavior.gesture and self._last_command_sent == behavior.command:
                 self._queue_state = "waiting_release"
-                return False, "waiting_release", "safety_held"
+                return False, "waiting_release", "waiting_release"
             self._queue_state = "dispatch"
             self._armed_oneshot_command = None
             self._armed_oneshot_gesture = None
@@ -267,7 +272,7 @@ class GestureController:
         if behavior.behavior_type == "one_shot":
             if behavior.requires_release and self._armed_oneshot_command == behavior.command:
                 self._queue_state = "waiting_release"
-                return False, "waiting_release", "release_required"
+                return False, "waiting_release", "waiting_release"
             if self._last_command_sent == behavior.command and elapsed_ms < behavior.cooldown_ms:
                 self._queue_state = "cooldown"
                 gesture_debug_log(
@@ -276,10 +281,10 @@ class GestureController:
                     command=behavior.command,
                     behavior_type=behavior.behavior_type,
                     action="cooldown",
-                    reason="cooldown_active",
+                    reason="cooldown",
                     cooldown_remaining_ms=max(0, int(behavior.cooldown_ms - elapsed_ms)),
                 )
-                return False, "cooldown", "cooldown_active"
+                return False, "cooldown", "cooldown"
             if self._armed_oneshot_gesture != behavior.gesture and self._last_command_sent == behavior.command:
                 gesture_debug_log(
                     "controller.oneshot_rearmed",
@@ -294,23 +299,38 @@ class GestureController:
 
         if self._last_command_sent == behavior.command and elapsed_ms < behavior.cooldown_ms:
             self._queue_state = "cooldown"
-            return False, "cooldown", "cooldown_active"
+            return False, "cooldown", "cooldown"
 
         self._queue_state = "dispatch"
         return True, "sent", "repeatable_ready"
 
-    def _maybe_release_oneshot(self, result: GestureInferenceResult) -> None:
+    def _maybe_release_oneshot(self, result: GestureInferenceResult, *, now: float) -> None:
         if self._armed_oneshot_command is None or self._armed_oneshot_gesture is None:
+            self._release_started_at = 0.0
             return
 
         current_marker = self._active_marker(result)
         if current_marker == self._armed_oneshot_gesture:
+            self._release_started_at = 0.0
             return
+
+        release_reason = "gesture_changed"
+        if current_marker is None:
+            if self._release_started_at <= 0.0:
+                self._release_started_at = now
+                return
+            elapsed_ms = (now - self._release_started_at) * 1000.0
+            if elapsed_ms < self._release_window_ms:
+                return
+            release_reason = "no_hand_timeout"
+        else:
+            self._release_started_at = 0.0
 
         released_command = self._armed_oneshot_command
         released_gesture = self._armed_oneshot_gesture
         self._armed_oneshot_command = None
         self._armed_oneshot_gesture = None
+        self._release_started_at = 0.0
         if self._active_repeatable_command is not None and current_marker != self._last_active_gesture:
             self._active_repeatable_command = None
         gesture_debug_log(
@@ -319,7 +339,14 @@ class GestureController:
             command=released_command,
             behavior_type="one_shot",
             action="released",
-            reason="gesture_changed",
+            reason=release_reason,
+            release_marker=current_marker or "-",
+        )
+        gesture_debug_log(
+            "controller.waiting_release_cleared",
+            gesture=released_gesture,
+            command=released_command,
+            reason=release_reason,
             release_marker=current_marker or "-",
         )
 
