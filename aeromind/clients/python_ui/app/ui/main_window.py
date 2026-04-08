@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from app.config import AppConfig
 from app.controllers.app_controller import AppController
@@ -21,11 +22,22 @@ from app.utils.logging_utils import gesture_debug_log
 
 
 class MainWindow(QMainWindow):
+    COMPACT_MODE_HEIGHT = 780
+    TIGHT_LAYOUT_HEIGHT = 860
+    COMPACT_CONTROL_HEIGHT = 760
+    DETAIL_OVERFLOW_HEIGHT = 700
+    PANEL_MIN_WIDTH = 300
+    PANEL_MAX_WIDTH = 360
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("AeroMind Control Center")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(960, 640)
         self._is_shutting_down = False
+        self._compact_mode = False
+        self._has_shown_once = False
+        self._startup_activated = False
+        self._deferred_layout_pending = False
 
         central_widget = QWidget(self)
         layout = QVBoxLayout(central_widget)
@@ -36,16 +48,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.video_surface)
 
         self.hud_top_bar = HudTopBar(self.video_surface.overlay_container)
-        self.left_stick = VirtualStick("Yaw / Up-Down", size=216, parent=self.video_surface.overlay_container)
-        self.right_stick = VirtualStick("Left-Right / Forward-Back", size=216, parent=self.video_surface.overlay_container)
-        self.flight_action_cluster = FlightActionCluster(self.video_surface.overlay_container)
-        self.gesture_debug_panel = GestureDebugPanel(self.video_surface.overlay_container)
+        self.left_stick = VirtualStick("Yaw / Up-Down", size=216)
+        self.right_stick = VirtualStick("Left-Right / Forward-Back", size=216)
+        self.right_overlay_column = QWidget()
+        self.right_overlay_column.setAttribute(Qt.WA_StyledBackground, False)
+        self.right_overlay_layout = QVBoxLayout(self.right_overlay_column)
+        self.right_overlay_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_overlay_layout.setSpacing(12)
+        self.right_overlay_column.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
-        self.hud_top_bar.raise_()
-        self.left_stick.raise_()
-        self.right_stick.raise_()
-        self.flight_action_cluster.raise_()
-        self.gesture_debug_panel.raise_()
+        self.gesture_debug_scroll = QScrollArea(self.right_overlay_column)
+        self.gesture_debug_scroll.setWidgetResizable(True)
+        self.gesture_debug_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.gesture_debug_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.gesture_debug_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.gesture_debug_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.gesture_debug_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            " QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+
+        self.flight_action_cluster = FlightActionCluster(self.right_overlay_column)
+        self.gesture_debug_panel = GestureDebugPanel()
+        self.gesture_debug_scroll.setWidget(self.gesture_debug_panel)
+        self.right_overlay_layout.addWidget(self.gesture_debug_scroll, 1)
+        self.right_overlay_layout.addWidget(self.flight_action_cluster, 0, Qt.AlignBottom)
+        self._build_overlay_layout()
 
         self.setCentralWidget(central_widget)
 
@@ -94,10 +122,7 @@ class MainWindow(QMainWindow):
         self._apply_debug_defaults()
         self._wire_interactions()
         self._register_label_shortcuts()
-        self._layout_overlays()
-        self._run_startup_smoke_check()
-
-        self.runtime.start()
+        self._schedule_overlay_layout()
 
     def _connect_worker_signals(self) -> None:
         self.runtime.connect_workers(
@@ -111,7 +136,21 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, "hud_top_bar"):
-            self._layout_overlays()
+            self._schedule_overlay_layout()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._has_shown_once:
+            self._has_shown_once = True
+            self._schedule_overlay_layout()
+            QTimer.singleShot(0, self._activate_startup)
+            return
+        self._schedule_overlay_layout()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange and hasattr(self, "hud_top_bar"):
+            self._schedule_overlay_layout()
 
     def closeEvent(self, event) -> None:
         if self._is_shutting_down:
@@ -129,48 +168,96 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _layout_overlays(self) -> None:
-        edge_margin = 32
-        top_margin = 18
-        bottom_margin = 34
-        stack_spacing = 18
+        if not self._has_valid_overlay_surface():
+            self._schedule_overlay_layout()
+            return
 
         surface_width = self.video_surface.width()
         surface_height = self.video_surface.height()
+        compact_mode = surface_height < self.COMPACT_MODE_HEIGHT
+        low_height = surface_height < self.TIGHT_LAYOUT_HEIGHT
+        self._set_compact_mode(compact_mode)
 
-        top_bar_width = max(760, surface_width - (edge_margin * 2))
-        self.hud_top_bar.setGeometry(edge_margin, top_margin, top_bar_width, 44)
+        edge_margin = 20 if low_height else 32
+        top_margin = 14 if low_height else 18
+        bottom_margin = 22 if low_height else 34
+        stack_spacing = 12 if low_height else 18
 
-        left_size = self.left_stick.size()
-        right_size = self.right_stick.size()
-        left_y = surface_height - left_size.height() - bottom_margin
-        right_y = surface_height - right_size.height() - bottom_margin
+        stick_size = self._stick_size_for_height(surface_height)
+        self.left_stick.set_stick_size(stick_size)
+        self.right_stick.set_stick_size(stick_size)
+        self.flight_action_cluster.set_compact_mode(surface_height < self.COMPACT_CONTROL_HEIGHT)
+        self.gesture_debug_panel.set_compact_mode(compact_mode)
+        if surface_height < self.DETAIL_OVERFLOW_HEIGHT:
+            self.gesture_debug_panel.set_details_expanded(False)
+        panel_width = min(self.PANEL_MAX_WIDTH, max(self.PANEL_MIN_WIDTH, int(surface_width * 0.28)))
+        panel_width = min(panel_width, max(self.PANEL_MIN_WIDTH, surface_width - ((edge_margin * 2) + stick_size + 80)))
+        self.right_overlay_column.setFixedWidth(panel_width)
+        self.right_overlay_layout.setSpacing(8 if compact_mode else 12)
 
-        self.left_stick.move(edge_margin, left_y)
-        self.right_stick.move(surface_width - right_size.width() - edge_margin, right_y)
+        self.overlay_layout.setContentsMargins(edge_margin, top_margin, edge_margin, bottom_margin)
+        self.overlay_layout.setSpacing(stack_spacing)
+        self.overlay_body_layout.setSpacing(8 if compact_mode else 12)
+        self.stick_zone_layout.setContentsMargins(0, 0, 0, 0)
+        self.stick_zone_layout.setSpacing(0)
+        self.stick_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.stick_row_layout.setSpacing(18 if compact_mode else 28)
+        self.gesture_debug_scroll.setMinimumHeight(0)
+        self.gesture_debug_scroll.setMaximumHeight(16777215)
+        self.video_surface.overlay_container.updateGeometry()
 
-        cluster_size = self.flight_action_cluster.sizeHint()
-        cluster_x = surface_width - cluster_size.width() - edge_margin
-        cluster_y = right_y - cluster_size.height() - stack_spacing
-        cluster_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
-        cluster_y = max(cluster_min_y, cluster_y)
-        self.flight_action_cluster.setGeometry(
-            cluster_x,
-            cluster_y,
-            cluster_size.width(),
-            cluster_size.height(),
-        )
+    def _schedule_overlay_layout(self) -> None:
+        if self._deferred_layout_pending or self._is_shutting_down:
+            return
+        self._deferred_layout_pending = True
+        QTimer.singleShot(0, self._run_deferred_overlay_layout)
 
-        debug_size = self.gesture_debug_panel.sizeHint()
-        debug_x = surface_width - debug_size.width() - edge_margin
-        debug_y = cluster_y - debug_size.height() - stack_spacing
-        debug_min_y = self.hud_top_bar.y() + self.hud_top_bar.height() + stack_spacing
-        debug_y = max(debug_min_y, debug_y)
-        self.gesture_debug_panel.setGeometry(
-            debug_x,
-            debug_y,
-            debug_size.width(),
-            debug_size.height(),
-        )
+    def _run_deferred_overlay_layout(self) -> None:
+        self._deferred_layout_pending = False
+        if self._is_shutting_down:
+            return
+        self._layout_overlays()
+
+    def _has_valid_overlay_surface(self) -> bool:
+        if not self.isVisible():
+            return False
+        surface_width = self.video_surface.width()
+        surface_height = self.video_surface.height()
+        overlay_width = self.video_surface.overlay_container.width()
+        overlay_height = self.video_surface.overlay_container.height()
+        if surface_width < 320 or surface_height < 240:
+            return False
+        if overlay_width != surface_width or overlay_height != surface_height:
+            return False
+        return True
+
+    def _activate_startup(self) -> None:
+        if self._startup_activated or self._is_shutting_down:
+            return
+        self._startup_activated = True
+        self._schedule_overlay_layout()
+        self._run_startup_smoke_check()
+        self.runtime.start()
+        self._schedule_overlay_layout()
+
+    def _set_compact_mode(self, compact: bool) -> None:
+        compact = bool(compact)
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self.right_overlay_layout.setSpacing(8 if compact else 12)
+        self.hud_top_bar.set_compact_mode(compact)
+        self.video_surface.set_compact_mode(compact)
+
+    @staticmethod
+    def _stick_size_for_height(surface_height: int) -> int:
+        if surface_height < 680:
+            return 140
+        if surface_height < 760:
+            return 156
+        if surface_height < 860:
+            return 180
+        return 216
 
     def _apply_hud_defaults(self) -> None:
         self.app_state.connected = False
@@ -478,3 +565,33 @@ class MainWindow(QMainWindow):
     def _compact_health_text(text: str) -> str:
         value = MainWindow._safe_debug_text(text)
         return value[:28]
+
+    def _build_overlay_layout(self) -> None:
+        self.overlay_layout = QVBoxLayout(self.video_surface.overlay_container)
+        self.overlay_layout.setContentsMargins(32, 18, 32, 34)
+        self.overlay_layout.setSpacing(18)
+        self.overlay_layout.addWidget(self.hud_top_bar, 0)
+
+        self.overlay_body = QWidget(self.video_surface.overlay_container)
+        self.overlay_body_layout = QHBoxLayout(self.overlay_body)
+        self.overlay_body_layout.setContentsMargins(0, 0, 0, 0)
+        self.overlay_body_layout.setSpacing(12)
+
+        self.stick_zone = QWidget(self.overlay_body)
+        self.stick_zone_layout = QVBoxLayout(self.stick_zone)
+        self.stick_zone_layout.setContentsMargins(0, 0, 0, 0)
+        self.stick_zone_layout.setSpacing(0)
+        self.stick_zone_layout.addStretch(1)
+
+        self.stick_row = QWidget(self.stick_zone)
+        self.stick_row_layout = QHBoxLayout(self.stick_row)
+        self.stick_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.stick_row_layout.setSpacing(28)
+        self.stick_row_layout.addWidget(self.left_stick, 0, Qt.AlignLeft | Qt.AlignBottom)
+        self.stick_row_layout.addStretch(1)
+        self.stick_row_layout.addWidget(self.right_stick, 0, Qt.AlignRight | Qt.AlignBottom)
+        self.stick_zone_layout.addWidget(self.stick_row, 0)
+
+        self.overlay_body_layout.addWidget(self.stick_zone, 1)
+        self.overlay_body_layout.addWidget(self.right_overlay_column, 0, Qt.AlignRight)
+        self.overlay_layout.addWidget(self.overlay_body, 1)

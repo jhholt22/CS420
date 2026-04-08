@@ -8,10 +8,13 @@ class HudTopBar(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("hudTopBar")
+        self._compact_mode = False
+        self.setProperty("compact", False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 1, 0, 1)
         layout.setSpacing(10)
+        self._layout = layout
 
         left_group = QHBoxLayout()
         left_group.setSpacing(6)
@@ -40,6 +43,17 @@ class HudTopBar(QWidget):
         right_group.addWidget(self.detector_label)
         right_group.addWidget(self.mode_label)
         right_group.addWidget(self.altitude_label)
+        self._chips = [
+            self.connection_label,
+            self.sdk_label,
+            self.video_label,
+            self.command_label,
+            self.startup_label,
+            self.battery_label,
+            self.detector_label,
+            self.mode_label,
+            self.altitude_label,
+        ]
 
         left_widget = QWidget(self)
         left_widget.setLayout(left_group)
@@ -63,3 +77,22 @@ class HudTopBar(QWidget):
         chip.setObjectName("hudChip")
         chip.setAlignment(Qt.AlignCenter)
         return chip
+
+    def set_compact_mode(self, compact: bool) -> None:
+        compact = bool(compact)
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self.setProperty("compact", compact)
+        self._layout.setContentsMargins(0, 0 if compact else 1, 0, 0 if compact else 1)
+        self._layout.setSpacing(6 if compact else 10)
+        self.title_label.setProperty("compact", compact)
+        for chip in self._chips:
+            chip.setProperty("compact", compact)
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+        self.title_label.style().unpolish(self.title_label)
+        self.title_label.style().polish(self.title_label)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.updateGeometry()

@@ -12,14 +12,22 @@ class VirtualStick(QWidget):
     def __init__(self, title: str, size: int = 180, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.title = title
-        self.stick_size = size
+        self.stick_size = 0
         self.x_value = 0
         self.y_value = 0
         self._dragging = False
         self._knob_offset = QPointF(0.0, 0.0)
 
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.set_stick_size(size)
+
+    def set_stick_size(self, size: int) -> None:
+        size = max(136, int(size))
+        if size == self.stick_size:
+            return
+        self.stick_size = size
         self.setFixedSize(size, size)
+        self.update()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:

@@ -47,6 +47,7 @@ class VideoSurface(QWidget):
         self.setAutoFillBackground(True)
         self._is_live = False
         self._current_status = "No Signal"
+        self._compact_mode = False
 
         palette = self.palette()
         palette.setColor(QPalette.Window, QColor("#020617"))
@@ -75,6 +76,7 @@ class VideoSurface(QWidget):
         self.stream_status_label = QLabel("NO SIGNAL", self.overlay_container)
         self.stream_status_label.setObjectName("videoStatusBadge")
         self.stream_status_label.setAlignment(Qt.AlignCenter)
+        self.stream_status_label.setProperty("compact", False)
         self.stream_status_label.raise_()
 
     def resizeEvent(self, event) -> None:
@@ -84,7 +86,21 @@ class VideoSurface(QWidget):
         self.placeholder_subtext.setGeometry(0, max(0, self.height() // 2 + 2), self.width(), 18)
         self.reticle_overlay.setGeometry(self.rect())
         self.overlay_container.setGeometry(self.rect())
-        self.stream_status_label.setGeometry(self.width() - 138, 18, 118, 28)
+        badge_width = 102 if self._compact_mode else 118
+        badge_height = 24 if self._compact_mode else 28
+        badge_margin = 14 if self._compact_mode else 18
+        self.stream_status_label.setGeometry(self.width() - badge_width - badge_margin, badge_margin, badge_width, badge_height)
+
+    def set_compact_mode(self, compact: bool) -> None:
+        compact = bool(compact)
+        if compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self.stream_status_label.setProperty("compact", compact)
+        self.stream_status_label.style().unpolish(self.stream_status_label)
+        self.stream_status_label.style().polish(self.stream_status_label)
+        self.stream_status_label.update()
+        self.updateGeometry()
 
     def set_video_pixmap(self, pixmap: QPixmap) -> None:
         if pixmap.isNull():

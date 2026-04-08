@@ -51,6 +51,12 @@ def apply_dark_theme(app: QApplication) -> None:
             letter-spacing: 1px;
         }
 
+        #videoStatusBadge[compact="true"] {
+            border-radius: 7px;
+            padding: 2px 8px;
+            font-size: 9px;
+        }
+
         #hudTopBar {
             background: transparent;
             border: none;
@@ -61,6 +67,11 @@ def apply_dark_theme(app: QApplication) -> None:
             font-size: 16px;
             font-weight: 700;
             letter-spacing: 2.4px;
+        }
+
+        #hudTitle[compact="true"] {
+            font-size: 13px;
+            letter-spacing: 1.6px;
         }
 
         #hudTitleAccent {
@@ -75,6 +86,12 @@ def apply_dark_theme(app: QApplication) -> None:
             padding: 3px 10px;
             font-size: 10px;
             font-weight: 700;
+        }
+
+        #hudChip[compact="true"] {
+            border-radius: 7px;
+            padding: 2px 8px;
+            font-size: 9px;
         }
 
         #gestureToggleButton[state="off"] {
