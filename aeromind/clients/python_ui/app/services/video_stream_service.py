@@ -241,14 +241,26 @@ class VideoStreamService:
 
     @staticmethod
     def _is_stream_reachable(url: str) -> bool:
+        import socket as _socket
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             return True
+        # Try HEAD first — avoids opening the infinite MJPEG stream body
         try:
-            request = Request(url, method="GET")
-            with urlopen(request, timeout=1.0) as response:
+            request = Request(url, method="HEAD")
+            with urlopen(request, timeout=2.0) as response:
                 return bool(getattr(response, "status", 200) < 500)
         except (TimeoutError, URLError, OSError):
+            pass
+        # HEAD may not be supported by the MJPEG server — fall back to a
+        # TCP-level connect only. If the port is open and listening, the
+        # stream is reachable and OpenCV can open it directly.
+        try:
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 80
+            with _socket.create_connection((host, port), timeout=2.0):
+                return True
+        except OSError:
             return False
 
     @staticmethod
