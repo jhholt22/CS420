@@ -94,8 +94,10 @@ class MainWindow(QMainWindow):
         )
         self.gesture_debug_panel.set_session_context(**self.gesture_logger.get_session_context())
         self.telemetry_service = TelemetryService()
+        # Main video pipeline = sim/drone display stream.
+        # Gesture pipeline = separate camera for inference.
         self.video_service = VideoStreamService(
-            self.config.gesture_video_source(),
+            self.config.drone_video_source(),
             prefer_ffmpeg=self.config.video_backend_prefer_ffmpeg,
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,

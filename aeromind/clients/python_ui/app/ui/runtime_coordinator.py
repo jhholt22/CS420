@@ -78,6 +78,8 @@ class ClientRuntimeCoordinator:
         self.video_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="video"))
         self.video_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="video"))
 
+        # Main video pipeline = sim/drone display stream.
+        # Gesture pipeline = separate camera for inference.
         self.gesture_video_service = VideoStreamService(
             self.config.gesture_video_source(),
             prefer_ffmpeg=False,
@@ -591,9 +593,13 @@ class ClientRuntimeCoordinator:
 
     def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec | None:
         normalized_mode = self._normalize_mode(mode)
-        if normalized_mode in {"sim", "drone", None}:
-            return self.config.gesture_video_source()
-        return None
+        # The gesture camera is a separate pipeline; the main VideoWorker should follow
+        # the active sim/drone video transport, not the gesture webcam source.
+        if normalized_mode == "sim":
+            return self.config.sim_video_source()
+        if normalized_mode == "drone":
+            return self.config.drone_video_source()
+        return self.config.drone_video_source()
 
     @staticmethod
     def _normalize_mode(mode: str | None) -> str | None:

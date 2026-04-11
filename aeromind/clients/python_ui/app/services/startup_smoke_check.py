@@ -210,8 +210,22 @@ class StartupSmokeCheckService:
             next_action="Verify the MJPEG server is running on the configured video URL.",
         )
 
-    def _video_source_for_mode(self, mode: str) -> VideoSourceSpec:
-        return self.config.gesture_video_source()
+    def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec:
+        normalized_mode = self._normalize_mode(mode)
+        # The gesture camera is a separate pipeline; the main runtime/smoke check video
+        # source must follow the active sim/drone transport instead of the gesture webcam.
+        if normalized_mode == "sim":
+            return self.config.sim_video_source()
+        return self.config.drone_video_source()
+
+    @staticmethod
+    def _normalize_mode(mode: str | None) -> str | None:
+        if mode is None:
+            return None
+        normalized = str(mode).strip().lower()
+        if not normalized or normalized == "--":
+            return None
+        return normalized
 
 
 def run_startup_smoke_check(config: AppConfig | None = None) -> StartupSummary:

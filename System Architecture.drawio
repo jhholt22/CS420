@@ -1,0 +1,80 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="AXE--_zZUGJxjRIrWmnW">
+    <mxGraphModel dx="2421" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="light-dark(#FFFFFF,#42736F)" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-1" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Camera Input&#xa;Webcam or Drone Stream" vertex="1">
+          <mxGeometry height="78" width="242" x="20" y="104" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-2" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Gesture Inference Module&#xa;Hand Landmark Detection&#xa;and Gesture Classification" vertex="1">
+          <mxGeometry height="102" width="362.5" x="-42.5" y="224" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-3" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Stabilization Layer&#xa;Confidence Threshold&#xa;Temporal Consistency&#xa;Cooldown" vertex="1">
+          <mxGeometry height="126" width="251" x="15.5" y="380" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-4" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Command Mapping Layer&#xa;Gesture to High-Level Command" vertex="1">
+          <mxGeometry height="102" width="260" x="8.75" y="570" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-5" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Safety Filter&#xa;One-Shot Rules&#xa;Repeatable Rules&#xa;Safety Override&#xa;Command Blocking" vertex="1">
+          <mxGeometry height="150" width="195" x="43.5" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-6" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="API Communication Layer&#xa;REST Requests" vertex="1">
+          <mxGeometry height="78" width="243" x="465.5" y="780" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-7" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Drone or Simulator Controller&#xa;Command Execution" vertex="1">
+          <mxGeometry height="102" width="260" x="850" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-8" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Drone / Simulator" vertex="1">
+          <mxGeometry height="54" width="189" x="519.5" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-9" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);fontSize=19;" value="Telemetry Feedback&#xa;Battery Height Status" vertex="1">
+          <mxGeometry height="78" width="214" x="470" y="570" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-10" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-1" style="startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;entryDx=0;entryDy=0;exitDx=0;exitDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-2" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-11" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-2" style="curved=1;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;entryDx=0;entryDy=0;exitDx=0;exitDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-3" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-12" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-3" style="curved=1;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;entryDx=0;entryDy=0;exitDx=0;exitDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-4" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-13" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-4" style="startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;exitDx=0;exitDy=0;entryDx=0;entryDy=0;strokeColor=default;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-5" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-14" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-5" style="curved=1;startArrow=none;endArrow=block;exitX=1;exitY=0.5;entryX=0;entryY=0.5;rounded=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-6" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-15" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-6" style="startArrow=none;endArrow=block;exitX=1;exitY=0.5;rounded=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-7" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1010" y="519" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-16" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-7" style="startArrow=none;endArrow=block;exitX=0.76;exitY=0;entryX=1;entryY=0.5;rounded=0;entryDx=0;entryDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-8" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-17" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-7" style="startArrow=none;endArrow=block;entryX=1;entryY=0.5;rounded=0;entryDx=0;entryDy=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-9" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="930" y="460" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-18" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-9" style="dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0.5;exitY=1;entryX=0.5;entryY=0;rounded=0;entryDx=0;entryDy=0;exitDx=0;exitDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-6" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-19" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-9" style="dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0;exitY=0.5;entryX=1;entryY=0.5;rounded=0;exitDx=0;exitDy=0;entryDx=0;entryDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-4" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GP_pfwir_s9m2Xacyd6G-20" edge="1" parent="1" source="GP_pfwir_s9m2Xacyd6G-8" style="dashed=1;dashPattern=2 3;startArrow=none;endArrow=block;exitX=0;exitY=0.37;entryX=1;entryY=0.5;rounded=0;entryDx=0;entryDy=0;fontSize=19;" target="GP_pfwir_s9m2Xacyd6G-1" value="Video Stream">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
