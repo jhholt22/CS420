@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
         self.gesture_debug_panel.set_session_context(**self.gesture_logger.get_session_context())
         self.telemetry_service = TelemetryService()
         self.video_service = VideoStreamService(
-            self.config.drone_video_source(),
+            self.config.gesture_video_source(),
             prefer_ffmpeg=self.config.video_backend_prefer_ffmpeg,
             max_width=self.config.video_max_width,
             max_height=self.config.video_max_height,
@@ -573,17 +573,23 @@ class MainWindow(QMainWindow):
         self.overlay_layout.addWidget(self.hud_top_bar, 0)
 
         self.overlay_body = QWidget(self.video_surface.overlay_container)
+        self.overlay_body.setAttribute(Qt.WA_StyledBackground, False)
+        self.overlay_body.setStyleSheet("background: transparent;")
         self.overlay_body_layout = QHBoxLayout(self.overlay_body)
         self.overlay_body_layout.setContentsMargins(0, 0, 0, 0)
         self.overlay_body_layout.setSpacing(12)
 
         self.stick_zone = QWidget(self.overlay_body)
+        self.stick_zone.setAttribute(Qt.WA_StyledBackground, False)
+        self.stick_zone.setStyleSheet("background: transparent;")
         self.stick_zone_layout = QVBoxLayout(self.stick_zone)
         self.stick_zone_layout.setContentsMargins(0, 0, 0, 0)
         self.stick_zone_layout.setSpacing(0)
         self.stick_zone_layout.addStretch(1)
 
         self.stick_row = QWidget(self.stick_zone)
+        self.stick_row.setAttribute(Qt.WA_StyledBackground, False)
+        self.stick_row.setStyleSheet("background: transparent;")
         self.stick_row_layout = QHBoxLayout(self.stick_row)
         self.stick_row_layout.setContentsMargins(0, 0, 0, 0)
         self.stick_row_layout.setSpacing(28)

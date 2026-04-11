@@ -54,3 +54,16 @@ video → inference → command → API
 
 - Requires server running
 - Works with simulator or real drone
+
+
+Gesture mapping for this build:
+- Open palm -> Takeoff
+- Point down -> Land
+- Fist -> Hover / Stop
+- Point up -> Move forward
+- Point left -> Move left
+- Point right -> Move right
+- L shape right -> Move up
+- L shape left -> Move down
+- No visible command -> Hover / Stop
+- Gesture tracking camera -> computer webcam

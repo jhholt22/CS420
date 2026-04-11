@@ -17,23 +17,30 @@ class GestureBehavior:
 
 
 GESTURE_BEHAVIOR_CONFIG: dict[str, GestureBehavior] = {
-    "thumbs_up": GestureBehavior(
-        gesture="thumbs_up",
+    "open_palm": GestureBehavior(
+        gesture="open_palm",
         command="takeoff",
+        behavior_type="one_shot",
+        cooldown_ms=2200,
+        requires_release=True,
+    ),
+    "point_down": GestureBehavior(
+        gesture="point_down",
+        command="land",
         behavior_type="one_shot",
         cooldown_ms=1800,
         requires_release=True,
     ),
     "fist": GestureBehavior(
         gesture="fist",
-        command="land",
-        behavior_type="one_shot",
-        cooldown_ms=1800,
-        requires_release=True,
+        command="hover",
+        behavior_type="safety",
+        cooldown_ms=0,
+        requires_release=False,
     ),
-    "open_palm": GestureBehavior(
-        gesture="open_palm",
-        command="stop",
+    "thumbs_up": GestureBehavior(
+        gesture="thumbs_up",
+        command="hover",
         behavior_type="safety",
         cooldown_ms=0,
         requires_release=False,

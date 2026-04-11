@@ -43,6 +43,8 @@ class ClientRuntimeCoordinator:
         self._last_motion_probe: dict[str, object] | None = None
         self._started = False
         self._selected_video_mode: str | None = None
+        self._last_hover_command_ts = 0.0
+        self._last_seen_gesture_ts = 0.0
         self._inference_frame_buffer = LatestFrameBuffer(self.config.inference_max_pending_frames)
 
         self.status_thread = QThread(parent)
@@ -75,6 +77,32 @@ class ClientRuntimeCoordinator:
         self.video_thread.finished.connect(lambda: gesture_debug_log("thread.quit", thread="video"))
         self.video_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="video"))
         self.video_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="video"))
+
+        self.gesture_video_service = VideoStreamService(
+            self.config.gesture_video_source(),
+            prefer_ffmpeg=False,
+            max_width=self.config.video_max_width,
+            max_height=self.config.video_max_height,
+        )
+        self.gesture_video_thread = QThread(parent)
+        self.gesture_video_thread.setObjectName("gesture-video-thread")
+        self.gesture_video_worker = VideoWorker(
+            self.gesture_video_service,
+            self.config.gesture_video_source(),
+            self.config.video_reconnect_delay_ms,
+            read_interval_ms=self.config.video_read_interval_ms,
+            drop_frames_on_reconnect=self.config.video_drop_frames_on_reconnect,
+            inference_emit_interval_ms=self.config.gesture_inference_interval_ms(),
+            perf_log_interval_ms=self.config.performance_log_interval_ms,
+            frame_sink=self._inference_frame_buffer.submit,
+        )
+        self.gesture_video_worker.moveToThread(self.gesture_video_thread)
+        self.gesture_video_thread.started.connect(self.gesture_video_worker.start)
+        self.gesture_video_worker.workerFinished.connect(self.gesture_video_thread.quit)
+        self.gesture_video_thread.finished.connect(self.gesture_video_worker.deleteLater)
+        self.gesture_video_thread.finished.connect(lambda: gesture_debug_log("thread.quit", thread="gesture-video"))
+        self.gesture_video_worker.workerStarted.connect(lambda: gesture_debug_log("thread.worker_start", worker="gesture-video"))
+        self.gesture_video_worker.workerFinished.connect(lambda: gesture_debug_log("thread.worker_finish_signal", worker="gesture-video"))
 
         self.inference_thread = QThread(parent)
         self.inference_thread.setObjectName("inference-thread")
@@ -117,29 +145,34 @@ class ClientRuntimeCoordinator:
             "thread.runtime_start",
             status_thread_running=self.status_thread.isRunning(),
             video_thread_running=self.video_thread.isRunning(),
+            gesture_video_thread_running=self.gesture_video_thread.isRunning(),
             inference_thread_running=self.inference_thread.isRunning(),
         )
         self.status_thread.start()
         self.video_thread.start()
+        # Shared webcam/display worker also feeds inference frames; do not start a second webcam capture.
         self.inference_thread.start()
         self._started = True
 
     def stop(self) -> None:
-        if not self._started and not self.status_thread.isRunning() and not self.video_thread.isRunning() and not self.inference_thread.isRunning():
+        if not self._started and not self.status_thread.isRunning() and not self.video_thread.isRunning() and not self.gesture_video_thread.isRunning() and not self.inference_thread.isRunning():
             gesture_debug_log("thread.runtime_stop_skipped", reason="already_stopped")
             return
         gesture_debug_log("thread.runtime_stop_requested")
         self._safe_stop_worker(self.status_worker)
         self._safe_stop_worker(self.video_worker)
+        # gesture_video_worker is intentionally not started; avoid opening the webcam twice.
         self._safe_stop_worker(self.inference_worker)
         self._safe_quit_thread(self.status_thread, 5000)
         self._safe_quit_thread(self.video_thread, 5000)
+        # gesture_video_thread is intentionally not started.
         self._safe_quit_thread(self.inference_thread, 5000)
         self._started = False
         gesture_debug_log(
             "thread.cleanup_completed",
             status_thread_running=self.status_thread.isRunning(),
             video_thread_running=self.video_thread.isRunning(),
+            gesture_video_thread_running=self.gesture_video_thread.isRunning(),
             inference_thread_running=self.inference_thread.isRunning(),
         )
 
@@ -150,6 +183,8 @@ class ClientRuntimeCoordinator:
         self.app_state.gesture_enabled = False
         self.app_controller.rc_controller.reset()
         self._selected_video_mode = None
+        self._last_hover_command_ts = 0.0
+        self._last_seen_gesture_ts = 0.0
         self.clear_pending_gesture_frames()
         self.select_video_source(mode=None, reason="runtime_reset")
         self.video_service.close()
@@ -178,6 +213,8 @@ class ClientRuntimeCoordinator:
             required_confidence = self._as_float(debug_state.get("required_confidence"))
             required_hits = self._as_int(debug_state.get("required_hits"))
             ui_shown = bool(result.raw_gesture or result.stable_gesture)
+            if ui_shown:
+                self._last_seen_gesture_ts = monotonic()
             gesture_debug_log(
                 "gesture.pipeline_trace",
                 frame_id=frame_id,
@@ -306,6 +343,12 @@ class ClientRuntimeCoordinator:
                     battery_pct=self.app_state.battery_pct,
                     height_cm=self.app_state.height_cm,
                 )
+                self._maybe_auto_hover(
+                    result=result,
+                    decision=decision,
+                    frame_id=frame_id,
+                    on_api_error=on_api_error,
+                )
             return debug_state
         except ApiClientError as exc:
             gesture_debug_log(
@@ -383,6 +426,45 @@ class ClientRuntimeCoordinator:
             source_label=source.label,
         )
         self.video_worker.set_source(source, mode=normalized_mode, reason=reason)
+
+    def _maybe_auto_hover(
+        self,
+        *,
+        result: Any,
+        decision: Any,
+        frame_id: int,
+        on_api_error: Callable[[str], None],
+    ) -> None:
+        if not self.app_controller.gesture_controller.is_enabled():
+            return
+        if self.app_state.mode not in {"drone", "sim"}:
+            return
+        if result.raw_gesture or result.stable_gesture:
+            return
+
+        now = monotonic()
+        idle_ms = int((now - self._last_seen_gesture_ts) * 1000.0) if self._last_seen_gesture_ts > 0 else self.config.gesture_idle_hover_ms
+        if idle_ms < self.config.gesture_idle_hover_ms:
+            return
+        if (now - self._last_hover_command_ts) * 1000.0 < self.config.gesture_hover_command_cooldown_ms:
+            return
+
+        # Do not spam the drone with repeated stop commands while no gesture is visible.
+        # Tello naturally holds position after a completed movement command, so waiting here keeps it hovering.
+        self.app_state.set_command_status(status="hover", error=None)
+        self._last_hover_command_ts = now
+        gesture_debug_log(
+            "gesture.auto_hover",
+            frame_id=frame_id,
+            raw_gesture=result.raw_gesture,
+            stable_gesture=result.stable_gesture,
+            confidence=result.confidence,
+            resolved_command=decision.command_name,
+            block_reason=decision.block_reason,
+            idle_ms=idle_ms,
+            sent=False,
+            mode="passive_hover",
+        )
 
     def _call_api(
         self,
@@ -509,12 +591,8 @@ class ClientRuntimeCoordinator:
 
     def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec | None:
         normalized_mode = self._normalize_mode(mode)
-        if normalized_mode == "sim":
-            return self.config.sim_video_source()
-        if normalized_mode == "drone":
-            return self.config.drone_video_source()
-        if normalized_mode is None:
-            return self.config.drone_video_source()
+        if normalized_mode in {"sim", "drone", None}:
+            return self.config.gesture_video_source()
         return None
 
     @staticmethod

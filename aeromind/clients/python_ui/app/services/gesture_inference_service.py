@@ -91,9 +91,10 @@ class GestureInferenceService:
         self._gesture_command_map = dict(self._GESTURE_COMMAND_MAP)
         self._enabled_gesture_commands = set(self._gesture_command_map.keys())
         self._gesture_safety_rules = {
-            "thumbs_up": {"min_confidence": 0.80, "required_hits": self.dominance_frames},
-            "fist": {"min_confidence": 0.82, "required_hits": self.dominance_frames},
-            "open_palm": {"min_confidence": 0.62, "required_hits": 2},
+            "open_palm": {"min_confidence": 0.84, "required_hits": self.dominance_frames},
+            "point_down": {"min_confidence": 0.82, "required_hits": self.dominance_frames},
+            "fist": {"min_confidence": 0.72, "required_hits": 2},
+            "thumbs_up": {"min_confidence": 0.72, "required_hits": 2},
             "point_up": {"min_confidence": 0.76, "required_hits": self.dominance_frames},
         }
         self._fast_path_confidence = 0.88
@@ -485,8 +486,10 @@ class GestureInferenceService:
         )
         index_above_middle = points[8].y < points[12].y - 0.03
 
-        if finger_states["thumb"] and all(finger_states[name] for name in ("index", "middle", "ring", "pinky")):
-            return "open_palm", 0.94
+        if all(finger_states[name] for name in ("index", "middle", "ring", "pinky")):
+            thumb_centered = abs(points[4].x - points[9].x) < 0.22
+            if finger_states["thumb"] or thumb_centered:
+                return "open_palm", 0.95
 
         if extended_count == 0:
             return "fist", 0.94
@@ -512,6 +515,8 @@ class GestureInferenceService:
         ):
             if index_direction == "up" and index_above_middle:
                 return "point_up", 0.86
+            if index_direction == "down":
+                return "point_down", 0.87
             if index_direction == "left":
                 return "point_left", 0.86
             if index_direction == "right":
@@ -579,8 +584,11 @@ class GestureInferenceService:
         delta_y = points[8].y - points[5].y
         if abs(delta_x) > abs(delta_y) * 1.15:
             return "right" if delta_x > 0 else "left"
-        if abs(delta_y) > abs(delta_x) * 1.15 and delta_y < 0:
-            return "up"
+        if abs(delta_y) > abs(delta_x) * 1.15:
+            if delta_y < -0.05:
+                return "up"
+            if delta_y > 0.05:
+                return "down"
         return None
 
     def _resolve_command(
@@ -591,11 +599,6 @@ class GestureInferenceService:
         confidence: float | None,
     ) -> tuple[str | None, str, int, float]:
         if stable_gesture is None:
-            if raw_gesture == "open_palm":
-                safety_rule = self._gesture_safety_rules.get("open_palm", {})
-                min_confidence = float(safety_rule.get("min_confidence", self.min_confidence))
-                if confidence is not None and confidence >= min_confidence:
-                    return "stop", "ready", 1, min_confidence
             if self.debug_bypass_stability:
                 bypass_command = self._resolve_debug_bypass_command(raw_gesture, confidence)
                 if bypass_command is not None:
@@ -648,9 +651,10 @@ class GestureInferenceService:
             return cls._DEFAULT_MIN_CONFIDENCE
 
         safety_rule = {
-            "thumbs_up": {"min_confidence": 0.80},
-            "fist": {"min_confidence": 0.82},
-            "open_palm": {"min_confidence": 0.62},
+            "open_palm": {"min_confidence": 0.84},
+            "point_down": {"min_confidence": 0.82},
+            "fist": {"min_confidence": 0.72},
+            "thumbs_up": {"min_confidence": 0.72},
             "point_up": {"min_confidence": 0.76},
         }.get(stable_gesture, {})
         behavior = get_gesture_behavior(stable_gesture)

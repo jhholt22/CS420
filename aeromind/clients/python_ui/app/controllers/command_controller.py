@@ -38,8 +38,11 @@ class CommandController:
             return self.land()
         if command_name == "emergency":
             return self.emergency()
-        if command_name == "stop":
-            return self.send_named_command("stop")
+        if command_name in {"stop", "hover"}:
+            return self.send_named_command(
+                "rc",
+                {"left_right": 0, "forward_back": 0, "up_down": 0, "yaw": 0},
+            )
         if command_name in {"forward", "left", "right"}:
             return self.send_named_command(
                 command_name,

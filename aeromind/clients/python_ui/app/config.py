@@ -8,6 +8,9 @@ API_BASE = "http://127.0.0.1:5000/api"
 STATUS_REFRESH_MS = 1000
 VIDEO_URL = "http://127.0.0.1:8080/video"
 SIM_WEBCAM_INDEX = 0
+GESTURE_WEBCAM_INDEX = 0
+GESTURE_IDLE_HOVER_MS = 350
+GESTURE_HOVER_COMMAND_COOLDOWN_MS = 900
 VIDEO_RECONNECT_DELAY_MS = 1000
 VIDEO_READ_INTERVAL_MS = 30
 VIDEO_MAX_WIDTH: int | None = None
@@ -32,6 +35,9 @@ class AppConfig:
     api_base_url: str = API_BASE
     video_url: str = VIDEO_URL
     sim_webcam_index: int = SIM_WEBCAM_INDEX
+    gesture_webcam_index: int = GESTURE_WEBCAM_INDEX
+    gesture_idle_hover_ms: int = GESTURE_IDLE_HOVER_MS
+    gesture_hover_command_cooldown_ms: int = GESTURE_HOVER_COMMAND_COOLDOWN_MS
     status_refresh_ms: int = STATUS_REFRESH_MS
     video_reconnect_delay_ms: int = VIDEO_RECONNECT_DELAY_MS
     video_read_interval_ms: int = VIDEO_READ_INTERVAL_MS
@@ -56,6 +62,10 @@ class AppConfig:
 
     def sim_video_source(self) -> VideoSourceSpec:
         return VideoSourceSpec.webcam(self.sim_webcam_index)
+
+
+    def gesture_video_source(self) -> VideoSourceSpec:
+        return VideoSourceSpec.webcam(self.gesture_webcam_index)
 
     def gesture_inference_interval_ms(self) -> int:
         fps = max(1, int(self.gesture_inference_max_fps))

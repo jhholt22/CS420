@@ -131,3 +131,21 @@ Supported gestures:
 
 Gesture control is experimental and may not always trigger commands reliably.
  
+
+
+## Gesture camera source
+
+The live display can stay on the drone camera while gesture detection now reads from your computer webcam (`gesture_webcam_index`, default `0`).
+
+
+Gesture mapping for this build:
+- Open palm -> Takeoff
+- Point down -> Land
+- Fist -> Hover / Stop
+- Point up -> Move forward
+- Point left -> Move left
+- Point right -> Move right
+- L shape right -> Move up
+- L shape left -> Move down
+- No visible command -> Hover / Stop
+- Gesture tracking camera -> computer webcam

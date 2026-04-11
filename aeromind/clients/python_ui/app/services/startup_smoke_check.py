@@ -211,9 +211,7 @@ class StartupSmokeCheckService:
         )
 
     def _video_source_for_mode(self, mode: str) -> VideoSourceSpec:
-        if mode == "sim":
-            return self.config.sim_video_source()
-        return self.config.drone_video_source()
+        return self.config.gesture_video_source()
 
 
 def run_startup_smoke_check(config: AppConfig | None = None) -> StartupSummary:

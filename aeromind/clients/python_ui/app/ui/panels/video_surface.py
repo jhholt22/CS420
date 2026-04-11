@@ -71,6 +71,8 @@ class VideoSurface(QWidget):
 
         self.overlay_container = QWidget(self)
         self.overlay_container.setObjectName("videoOverlayContainer")
+        self.overlay_container.setAttribute(Qt.WA_StyledBackground, False)
+        self.overlay_container.setStyleSheet("background: transparent;")
         self.overlay_container.raise_()
 
         self.stream_status_label = QLabel("NO SIGNAL", self.overlay_container)
