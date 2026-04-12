@@ -30,6 +30,15 @@ EXPECTED_COLUMNS = [
     "confidence",
     "stable_ms",
     "stable_hits",
+    "t_frame_capture",
+    "t_inference_done",
+    "t_stable_ready",
+    "t_command_dispatch_start",
+    "t_command_dispatch_end",
+    "api_roundtrip_ms",
+    "vision_to_stable_ms",
+    "stable_to_dispatch_ms",
+    "total_client_pipeline_ms",
     "threshold",
     "resolved_command",
     "dispatch_allowed",
@@ -190,13 +199,41 @@ def summarize_latency(series: pd.Series) -> dict[str, Any]:
 
 
 def compute_latency_metrics(dataframe: pd.DataFrame) -> dict[str, Any]:
-    dispatch_rows = dataframe[normalize_text_series(dataframe["event_type"]) == "command_dispatch"].copy()
+    event_type = normalize_text_series(dataframe["event_type"])
+    dispatch_rows = dataframe[event_type == "command_dispatch"].copy()
+    blocked_rows = dataframe[event_type == "command_blocked"].copy()
+    ready_rows = dataframe[event_type == "gesture_ready"].copy()
+    motion_rows = dataframe[event_type == "motion_observed"].copy()
+
     api_latency = to_numeric_series(dispatch_rows["ack_ts_ms"]) - to_numeric_series(dispatch_rows["command_ts_ms"])
     e2e_latency = to_numeric_series(dataframe["e2e_latency_ms"])
+    vision_to_stable = to_numeric_series(pd.concat([dispatch_rows["vision_to_stable_ms"], ready_rows["vision_to_stable_ms"]]))
+    stable_to_dispatch = to_numeric_series(dispatch_rows["stable_to_dispatch_ms"])
+    client_pipeline = to_numeric_series(dispatch_rows["total_client_pipeline_ms"])
+    api_roundtrip = to_numeric_series(dispatch_rows["api_roundtrip_ms"])
+
+    stage_averages = {
+        "vision_to_stable_ms": round_metric(vision_to_stable.mean() if not vision_to_stable.dropna().empty else None),
+        "stable_to_dispatch_ms": round_metric(stable_to_dispatch.mean() if not stable_to_dispatch.dropna().empty else None),
+        "api_roundtrip_ms": round_metric(api_roundtrip.mean() if not api_roundtrip.dropna().empty else None),
+    }
+    dominant_stage = None
+    non_null_stage_averages = {key: value for key, value in stage_averages.items() if value is not None}
+    if non_null_stage_averages:
+        dominant_stage = max(non_null_stage_averages, key=non_null_stage_averages.get)
 
     return {
+        "gesture_ready_count": int(len(ready_rows)),
+        "command_dispatch_count": int(len(dispatch_rows)),
+        "command_blocked_count": int(len(blocked_rows)),
+        "motion_observed_count": int(len(motion_rows)),
+        "vision_to_stable_ms": summarize_latency(vision_to_stable),
+        "stable_to_dispatch_ms": summarize_latency(stable_to_dispatch),
+        "api_roundtrip_ms": summarize_latency(api_roundtrip),
+        "total_client_pipeline_ms": summarize_latency(client_pipeline),
         "api_latency_ms": summarize_latency(api_latency),
         "end_to_end_latency_ms": summarize_latency(e2e_latency),
+        "dominant_delay_stage": dominant_stage,
     }
 
 
@@ -350,6 +387,23 @@ def print_report(
         print("  No blocked commands")
 
     print_section("Latency")
+    print_key_value("Gesture ready count", latency["gesture_ready_count"])
+    print_key_value("Command dispatch count", latency["command_dispatch_count"])
+    print_key_value("Command blocked count", latency["command_blocked_count"])
+    print_key_value("Motion observed count", latency["motion_observed_count"])
+    print_key_value("Dominant delay stage", latency["dominant_delay_stage"])
+    for metric_name in [
+        "vision_to_stable_ms",
+        "stable_to_dispatch_ms",
+        "api_roundtrip_ms",
+        "total_client_pipeline_ms",
+    ]:
+        metric = latency[metric_name]
+        print_key_value(f"{metric_name} count", metric["count"])
+        print_key_value(f"{metric_name} avg", metric["average"])
+        print_key_value(f"{metric_name} median", metric["median"])
+        print_key_value(f"{metric_name} min", metric["min"])
+        print_key_value(f"{metric_name} max", metric["max"])
     api_latency = latency["api_latency_ms"]
     e2e_latency = latency["end_to_end_latency_ms"]
     print_key_value("API latency count", api_latency["count"])

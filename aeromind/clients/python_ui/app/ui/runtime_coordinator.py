@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from time import monotonic, time
 from typing import Any, Callable
 
@@ -18,6 +19,24 @@ from app.utils.logging_utils import gesture_debug_log
 from app.workers.inference_worker import InferenceUpdate, InferenceWorker, LatestFrameBuffer
 from app.workers.status_worker import StatusWorker
 from app.workers.video_worker import VideoWorker
+
+
+@dataclass(slots=True)
+class _LatencyRecord:
+    frame_id: int
+    raw_gesture: str | None
+    stable_gesture: str | None
+    confidence: float | None
+    t_frame_capture: int | None
+    t_inference_done: int | None
+    t_stable_ready: int | None
+    t_command_dispatch_start: int | None
+    t_command_dispatch_end: int | None
+    api_roundtrip_ms: int | None
+    vision_to_stable_ms: int | None
+    stable_to_dispatch_ms: int | None
+    total_client_pipeline_ms: int | None
+    drone_motion_ts_ms: int | None = None
 
 
 class ClientRuntimeCoordinator:
@@ -46,6 +65,7 @@ class ClientRuntimeCoordinator:
         self._last_hover_command_ts = 0.0
         self._last_seen_gesture_ts = 0.0
         self._last_logged_command_block_key: tuple[object, ...] | None = None
+        self._last_logged_ready_key: tuple[object, ...] | None = None
         self._inference_frame_buffer = LatestFrameBuffer(self.config.inference_max_pending_frames)
 
         self.status_thread = QThread(parent)
@@ -189,6 +209,7 @@ class ClientRuntimeCoordinator:
         self._last_hover_command_ts = 0.0
         self._last_seen_gesture_ts = 0.0
         self._last_logged_command_block_key = None
+        self._last_logged_ready_key = None
         self.clear_pending_gesture_frames()
         self.select_video_source(mode=None, reason="runtime_reset")
         self.video_service.close()
@@ -216,6 +237,8 @@ class ClientRuntimeCoordinator:
             threshold = self._as_float(debug_state.get("threshold"))
             required_confidence = self._as_float(debug_state.get("required_confidence"))
             required_hits = self._as_int(debug_state.get("required_hits"))
+            t_frame_capture = self._monotonic_to_ms(update.t_frame_capture)
+            t_inference_done = self._monotonic_to_ms(update.t_inference_done)
             ui_shown = bool(result.raw_gesture or result.stable_gesture)
             if ui_shown:
                 self._last_seen_gesture_ts = monotonic()
@@ -243,29 +266,41 @@ class ClientRuntimeCoordinator:
                 inference_shape=update.inference_shape,
                 detector_available=result.detector_available,
             )
-            self.gesture_logger.log_gesture_event(
+            command_name = decision.command_name
+            # The gesture becomes "stable ready" once inference has produced an actionable
+            # command candidate and its queue state is accepted for dispatch.
+            actionable_ready = bool(command_name) and result.queue_state in {"ready", "debug_bypass"}
+            latency_ready = self._build_latency_record(
                 frame_id=frame_id,
-                gesture_true=self.gesture_logger.get_current_label(),
-                gesture_pred=result.raw_gesture,
-                stable_gesture=result.stable_gesture,
-                confidence=result.confidence,
-                stable_ms=stable_ms,
-                stable_hits=result.stable_hits,
+                result=result,
+                t_frame_capture=t_frame_capture,
+                t_inference_done=t_inference_done,
+                t_stable_ready=t_inference_done if actionable_ready else None,
+                t_command_dispatch_start=None,
+                t_command_dispatch_end=None,
+                drone_motion_ts_ms=None,
+            )
+            self._maybe_log_gesture_ready(
+                result=result,
+                decision=decision,
+                debug_state=debug_state,
                 threshold=threshold,
-                resolved_command=decision.command_name,
-                dispatch_allowed=decision.dispatch_allowed,
-                inference_queue_state=result.queue_state,
-                controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
                 required_hits=required_hits,
                 required_confidence=required_confidence,
-                drone_state=self.current_drone_state(),
-                battery_pct=self.app_state.battery_pct,
-                height_cm=self.app_state.height_cm,
+                latency=latency_ready,
             )
-
-            command_name = decision.command_name
             if decision.dispatch_allowed:
                 assert command_name is not None
+                dispatch_reason = "-"
+                if command_name in {"hover", "stop"}:
+                    dispatch_reason = (
+                        self._as_text(debug_state.get("pending_movement_stop_reason"))
+                        or decision.block_reason
+                        or "-"
+                    )
+                # Timestamp taken immediately before the client enters the API dispatch call.
+                dispatch_started_at = monotonic()
+                dispatch_start_ms = self._monotonic_to_ms(dispatch_started_at)
                 command_ts = int(time() * 1000)
                 gesture_debug_log(
                     "mainwindow.dispatch_attempt",
@@ -276,7 +311,7 @@ class ClientRuntimeCoordinator:
                     resolved_command=command_name,
                     threshold=threshold,
                     stable_ms=stable_ms,
-                    block_reason=decision.block_reason,
+                    block_reason=dispatch_reason,
                     dispatch_attempted=True,
                     detector_available=result.detector_available,
                 )
@@ -285,7 +320,20 @@ class ClientRuntimeCoordinator:
                     on_api_error=on_api_error,
                     command_status="sent",
                 )
+                # Timestamp taken immediately after the API call returns to the client.
+                dispatch_finished_at = monotonic()
+                dispatch_end_ms = self._monotonic_to_ms(dispatch_finished_at)
                 ack_ts = int(time() * 1000) if dispatch_result is not None else None
+                latency_dispatch = self._build_latency_record(
+                    frame_id=frame_id,
+                    result=result,
+                    t_frame_capture=t_frame_capture,
+                    t_inference_done=t_inference_done,
+                    t_stable_ready=t_inference_done,
+                    t_command_dispatch_start=dispatch_start_ms,
+                    t_command_dispatch_end=dispatch_end_ms,
+                    drone_motion_ts_ms=None,
+                )
                 gesture_debug_log(
                     "mainwindow.dispatch_result",
                     frame_id=frame_id,
@@ -296,23 +344,34 @@ class ClientRuntimeCoordinator:
                     threshold=threshold,
                     stable_ms=stable_ms,
                     queue_state="dispatch_ok" if dispatch_result is not None else "dispatch_failed",
-                    block_reason="-" if dispatch_result is not None else "api_dispatch_failed",
+                    block_reason=dispatch_reason if dispatch_result is not None else "api_dispatch_failed",
                     detector_available=result.detector_available,
+                    api_roundtrip_ms=latency_dispatch.api_roundtrip_ms,
+                    total_client_pipeline_ms=latency_dispatch.total_client_pipeline_ms,
                 )
                 self.gesture_logger.log_command_event(
                     event_type="command_dispatch",
                     frame_id=frame_id,
-                    resolved_command=command_name,
-                    dispatch_allowed=True,
-                    command_sent=command_name,
-                    command_block_reason="-",
-                    command_ts_ms=command_ts,
-                    ack_ts_ms=ack_ts,
                     gesture_pred=result.raw_gesture,
                     stable_gesture=result.stable_gesture,
                     confidence=result.confidence,
                     stable_ms=stable_ms,
                     stable_hits=result.stable_hits,
+                    t_frame_capture=latency_dispatch.t_frame_capture,
+                    t_inference_done=latency_dispatch.t_inference_done,
+                    t_stable_ready=latency_dispatch.t_stable_ready,
+                    t_command_dispatch_start=latency_dispatch.t_command_dispatch_start,
+                    t_command_dispatch_end=latency_dispatch.t_command_dispatch_end,
+                    api_roundtrip_ms=latency_dispatch.api_roundtrip_ms,
+                    vision_to_stable_ms=latency_dispatch.vision_to_stable_ms,
+                    stable_to_dispatch_ms=latency_dispatch.stable_to_dispatch_ms,
+                    total_client_pipeline_ms=latency_dispatch.total_client_pipeline_ms,
+                    resolved_command=command_name,
+                    dispatch_allowed=True,
+                    command_sent=command_name,
+                    command_block_reason=dispatch_reason,
+                    command_ts_ms=command_ts,
+                    ack_ts_ms=ack_ts,
                     threshold=threshold,
                     inference_queue_state=result.queue_state,
                     controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
@@ -322,6 +381,13 @@ class ClientRuntimeCoordinator:
                     battery_pct=self.app_state.battery_pct,
                     height_cm=self.app_state.height_cm,
                 )
+                self._emit_latency_console(
+                    event_type="command_dispatch",
+                    latency=latency_dispatch,
+                    command_name=command_name,
+                    stable_ms=stable_ms,
+                    block_reason=dispatch_reason,
+                )
                 self._last_logged_command_block_key = None
                 if dispatch_result is not None:
                     self._track_pending_motion(
@@ -329,6 +395,7 @@ class ClientRuntimeCoordinator:
                         command_name=command_name,
                         command_ts_ms=command_ts,
                         ack_ts_ms=ack_ts,
+                        latency=latency_dispatch,
                     )
                     return self.app_controller.gesture_controller.finalize_dispatch(command_name)
             else:
@@ -353,18 +420,37 @@ class ClientRuntimeCoordinator:
                     decision=decision,
                     debug_state=debug_state,
                 ):
+                    latency_blocked = self._build_latency_record(
+                        frame_id=frame_id,
+                        result=result,
+                        t_frame_capture=t_frame_capture,
+                        t_inference_done=t_inference_done,
+                        t_stable_ready=t_inference_done if actionable_ready else None,
+                        t_command_dispatch_start=None,
+                        t_command_dispatch_end=None,
+                        drone_motion_ts_ms=None,
+                    )
                     self.gesture_logger.log_command_event(
                         event_type="command_blocked",
                         frame_id=frame_id,
-                        resolved_command=command_name,
-                        dispatch_allowed=False,
-                        command_sent="-",
-                        command_block_reason=decision.block_reason,
                         gesture_pred=result.raw_gesture,
                         stable_gesture=result.stable_gesture,
                         confidence=result.confidence,
                         stable_ms=stable_ms,
                         stable_hits=result.stable_hits,
+                        t_frame_capture=latency_blocked.t_frame_capture,
+                        t_inference_done=latency_blocked.t_inference_done,
+                        t_stable_ready=latency_blocked.t_stable_ready,
+                        t_command_dispatch_start=latency_blocked.t_command_dispatch_start,
+                        t_command_dispatch_end=latency_blocked.t_command_dispatch_end,
+                        api_roundtrip_ms=latency_blocked.api_roundtrip_ms,
+                        vision_to_stable_ms=latency_blocked.vision_to_stable_ms,
+                        stable_to_dispatch_ms=latency_blocked.stable_to_dispatch_ms,
+                        total_client_pipeline_ms=latency_blocked.total_client_pipeline_ms,
+                        resolved_command=command_name,
+                        dispatch_allowed=False,
+                        command_sent="-",
+                        command_block_reason=decision.block_reason,
                         threshold=threshold,
                         inference_queue_state=result.queue_state,
                         controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
@@ -373,6 +459,13 @@ class ClientRuntimeCoordinator:
                         drone_state=self.current_drone_state(),
                         battery_pct=self.app_state.battery_pct,
                         height_cm=self.app_state.height_cm,
+                    )
+                    self._emit_latency_console(
+                        event_type="command_blocked",
+                        latency=latency_blocked,
+                        command_name=command_name,
+                        stable_ms=stable_ms,
+                        block_reason=decision.block_reason,
                     )
                 self._maybe_auto_hover(
                     result=result,
@@ -517,6 +610,168 @@ class ClientRuntimeCoordinator:
             self._last_logged_command_block_key = key
         return should_log
 
+    def _maybe_log_gesture_ready(
+        self,
+        *,
+        result: Any,
+        decision: Any,
+        debug_state: dict[str, str | float | bool | None],
+        threshold: float | None,
+        required_hits: int | None,
+        required_confidence: float | None,
+        latency: _LatencyRecord,
+    ) -> None:
+        key = self._gesture_ready_key(result=result, decision=decision)
+        if key is None:
+            self._last_logged_ready_key = None
+            return
+        if key == self._last_logged_ready_key:
+            return
+        self._last_logged_ready_key = key
+        self.gesture_logger.log_command_event(
+            event_type="gesture_ready",
+            frame_id=latency.frame_id,
+            gesture_pred=result.raw_gesture,
+            stable_gesture=result.stable_gesture,
+            confidence=result.confidence,
+            stable_ms=self._as_int(debug_state.get("stable_ms")),
+            stable_hits=result.stable_hits,
+            t_frame_capture=latency.t_frame_capture,
+            t_inference_done=latency.t_inference_done,
+            t_stable_ready=latency.t_stable_ready,
+            t_command_dispatch_start=None,
+            t_command_dispatch_end=None,
+            api_roundtrip_ms=None,
+            vision_to_stable_ms=latency.vision_to_stable_ms,
+            stable_to_dispatch_ms=None,
+            total_client_pipeline_ms=latency.total_client_pipeline_ms,
+            threshold=threshold,
+            resolved_command=decision.command_name,
+            dispatch_allowed=decision.dispatch_allowed,
+            command_sent="-",
+            command_block_reason="-",
+            inference_queue_state=result.queue_state,
+            controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
+            required_hits=required_hits,
+            required_confidence=required_confidence,
+            drone_state=self.current_drone_state(),
+            battery_pct=self.app_state.battery_pct,
+            height_cm=self.app_state.height_cm,
+        )
+        self._emit_latency_console(
+            event_type="gesture_ready",
+            latency=latency,
+            command_name=decision.command_name,
+            stable_ms=self._as_int(debug_state.get("stable_ms")),
+            block_reason="-",
+        )
+
+    @staticmethod
+    def _gesture_ready_key(*, result: Any, decision: Any) -> tuple[object, ...] | None:
+        if not decision.command_name or result.queue_state not in {"ready", "debug_bypass"}:
+            return None
+        return (
+            decision.command_name,
+            result.stable_gesture or "-",
+            result.queue_state,
+        )
+
+    def _build_latency_record(
+        self,
+        *,
+        frame_id: int,
+        result: Any,
+        t_frame_capture: int | None,
+        t_inference_done: int | None,
+        t_stable_ready: int | None,
+        t_command_dispatch_start: int | None,
+        t_command_dispatch_end: int | None,
+        drone_motion_ts_ms: int | None,
+    ) -> _LatencyRecord:
+        vision_to_stable_ms = self._duration_ms(t_frame_capture, t_stable_ready)
+        stable_to_dispatch_ms = self._duration_ms(t_stable_ready, t_command_dispatch_start)
+        api_roundtrip_ms = self._duration_ms(t_command_dispatch_start, t_command_dispatch_end)
+        total_client_pipeline_ms = self._duration_ms(t_frame_capture, t_command_dispatch_end)
+        if total_client_pipeline_ms is None:
+            total_client_pipeline_ms = self._duration_ms(t_frame_capture, t_stable_ready)
+        if total_client_pipeline_ms is None:
+            total_client_pipeline_ms = self._duration_ms(t_frame_capture, t_inference_done)
+        return _LatencyRecord(
+            frame_id=frame_id,
+            raw_gesture=result.raw_gesture,
+            stable_gesture=result.stable_gesture,
+            confidence=result.confidence,
+            t_frame_capture=t_frame_capture,
+            t_inference_done=t_inference_done,
+            t_stable_ready=t_stable_ready,
+            t_command_dispatch_start=t_command_dispatch_start,
+            t_command_dispatch_end=t_command_dispatch_end,
+            api_roundtrip_ms=api_roundtrip_ms,
+            vision_to_stable_ms=vision_to_stable_ms,
+            stable_to_dispatch_ms=stable_to_dispatch_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
+            drone_motion_ts_ms=drone_motion_ts_ms,
+        )
+
+    def _with_motion_latency(self, latency: object, motion_monotonic_ms: int | None) -> _LatencyRecord | None:
+        if not isinstance(latency, _LatencyRecord):
+            return None
+        total_client_pipeline_ms = latency.total_client_pipeline_ms
+        if motion_monotonic_ms is not None and latency.t_frame_capture is not None:
+            total_client_pipeline_ms = max(0, motion_monotonic_ms - latency.t_frame_capture)
+        return _LatencyRecord(
+            frame_id=latency.frame_id,
+            raw_gesture=latency.raw_gesture,
+            stable_gesture=latency.stable_gesture,
+            confidence=latency.confidence,
+            t_frame_capture=latency.t_frame_capture,
+            t_inference_done=latency.t_inference_done,
+            t_stable_ready=latency.t_stable_ready,
+            t_command_dispatch_start=latency.t_command_dispatch_start,
+            t_command_dispatch_end=latency.t_command_dispatch_end,
+            api_roundtrip_ms=latency.api_roundtrip_ms,
+            vision_to_stable_ms=latency.vision_to_stable_ms,
+            stable_to_dispatch_ms=latency.stable_to_dispatch_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
+            drone_motion_ts_ms=motion_monotonic_ms,
+        )
+
+    @staticmethod
+    def _emit_latency_console(
+        *,
+        event_type: str,
+        latency: _LatencyRecord,
+        command_name: str | None,
+        stable_ms: int | None,
+        block_reason: str,
+    ) -> None:
+        print(
+            "[LATENCY] "
+            f"event={event_type} "
+            f"frame_id={latency.frame_id} "
+            f"gesture={latency.stable_gesture or latency.raw_gesture or '-'} "
+            f"command={command_name or '-'} "
+            f"stable_ms={stable_ms if stable_ms is not None else '-'} "
+            f"vision_to_stable={latency.vision_to_stable_ms if latency.vision_to_stable_ms is not None else '-'} "
+            f"dispatch={latency.stable_to_dispatch_ms if latency.stable_to_dispatch_ms is not None else '-'} "
+            f"api={latency.api_roundtrip_ms if latency.api_roundtrip_ms is not None else '-'} "
+            f"total={latency.total_client_pipeline_ms if latency.total_client_pipeline_ms is not None else '-'} "
+            f"block_reason={block_reason or '-'}",
+            flush=True,
+        )
+
+    @staticmethod
+    def _duration_ms(start_ms: int | None, end_ms: int | None) -> int | None:
+        if start_ms is None or end_ms is None:
+            return None
+        return max(0, end_ms - start_ms)
+
+    @staticmethod
+    def _monotonic_to_ms(value: float | None) -> int | None:
+        if value is None or value <= 0.0:
+            return None
+        return int(value * 1000.0)
+
     def _call_api(
         self,
         action: Callable[[], Any],
@@ -543,6 +798,7 @@ class ClientRuntimeCoordinator:
         command_name: str,
         command_ts_ms: int,
         ack_ts_ms: int | None,
+        latency: _LatencyRecord,
     ) -> None:
         self._last_motion_probe = {
             "frame_id": frame_id,
@@ -551,6 +807,7 @@ class ClientRuntimeCoordinator:
             "ack_ts_ms": ack_ts_ms,
             "mode": self.app_state.mode,
             "height_cm": self.app_state.height_cm,
+            "latency": latency,
         }
 
     def _maybe_log_motion_observed(self, previous_mode: str, previous_height: int | None) -> None:
@@ -574,10 +831,12 @@ class ClientRuntimeCoordinator:
             return
 
         motion_ts_ms = int(time() * 1000)
+        motion_monotonic_ms = self._monotonic_to_ms(monotonic())
         command_ts_ms = self._as_int(probe.get("command_ts_ms"))
         e2e_latency_ms = None
         if command_ts_ms is not None:
             e2e_latency_ms = max(0, motion_ts_ms - command_ts_ms)
+        latency = self._with_motion_latency(probe.get("latency"), motion_monotonic_ms)
 
         self.gesture_logger.log_motion_event(
             frame_id=int(probe["frame_id"]),
@@ -585,11 +844,28 @@ class ClientRuntimeCoordinator:
             drone_state=self.current_drone_state(),
             battery_pct=self.app_state.battery_pct,
             height_cm=self.app_state.height_cm,
+            t_frame_capture=latency.t_frame_capture if latency is not None else None,
+            t_inference_done=latency.t_inference_done if latency is not None else None,
+            t_stable_ready=latency.t_stable_ready if latency is not None else None,
+            t_command_dispatch_start=latency.t_command_dispatch_start if latency is not None else None,
+            t_command_dispatch_end=latency.t_command_dispatch_end if latency is not None else None,
+            api_roundtrip_ms=latency.api_roundtrip_ms if latency is not None else None,
+            vision_to_stable_ms=latency.vision_to_stable_ms if latency is not None else None,
+            stable_to_dispatch_ms=latency.stable_to_dispatch_ms if latency is not None else None,
+            total_client_pipeline_ms=latency.total_client_pipeline_ms if latency is not None else None,
             command_ts_ms=command_ts_ms,
             ack_ts_ms=self._as_int(probe.get("ack_ts_ms")),
             drone_motion_ts_ms=motion_ts_ms,
             e2e_latency_ms=e2e_latency_ms,
         )
+        if latency is not None:
+            self._emit_latency_console(
+                event_type="motion_observed",
+                latency=latency,
+                command_name=command_name,
+                stable_ms=None,
+                block_reason="-",
+            )
         self._last_motion_probe = None
 
     @staticmethod

@@ -20,6 +20,10 @@ class InferenceUpdate:
     processing_ms: float
     input_shape: tuple[int, ...] | None
     inference_shape: tuple[int, ...] | None
+    t_frame_capture: float
+    t_buffer_submit: float
+    t_inference_start: float
+    t_inference_done: float
 
 
 class LatestFrameBuffer:
@@ -27,31 +31,38 @@ class LatestFrameBuffer:
         self.max_pending_frames = 1 if int(max_pending_frames) != 1 else 1
         self._lock = Lock()
         self._latest_frame: Any | None = None
+        self._latest_captured_at = 0.0
         self._latest_submitted_at = 0.0
         self._dropped_frames = 0
 
-    def submit(self, frame: Any) -> None:
+    def submit(self, frame: Any, *, frame_captured_at: float | None = None) -> None:
+        # Timestamp when the frame first becomes available to the client after capture/read.
+        captured_at = frame_captured_at if frame_captured_at is not None else monotonic()
         submitted_at = monotonic()
         with self._lock:
             # Real-time path: keep only the newest frame and drop any older pending frame.
             if self._latest_frame is not None:
                 self._dropped_frames += 1
             self._latest_frame = frame
+            self._latest_captured_at = captured_at
             self._latest_submitted_at = submitted_at
 
-    def take_latest(self) -> tuple[Any, float] | None:
+    def take_latest(self) -> tuple[Any, float, float] | None:
         with self._lock:
             if self._latest_frame is None:
                 return None
             frame = self._latest_frame
+            captured_at = self._latest_captured_at
             submitted_at = self._latest_submitted_at
             self._latest_frame = None
+            self._latest_captured_at = 0.0
             self._latest_submitted_at = 0.0
-        return frame, submitted_at
+        return frame, captured_at, submitted_at
 
     def clear(self) -> None:
         with self._lock:
             self._latest_frame = None
+            self._latest_captured_at = 0.0
             self._latest_submitted_at = 0.0
             self._dropped_frames = 0
 
@@ -123,7 +134,7 @@ class InferenceWorker(QObject):
                     time.sleep(0.01)
                     continue
 
-                frame, submitted_at = item
+                frame, captured_at, submitted_at = item
                 self._received_frame_counter += 1
                 self._received_frames_since_log += 1
 
@@ -146,6 +157,7 @@ class InferenceWorker(QObject):
                     )
                     self._last_logged_resize_shapes = resize_shapes
 
+                # Timestamp when inference work actually starts on this frame.
                 started_at = monotonic()
                 try:
                     result = self.gesture_inference_service.process_frame(inference_frame)
@@ -159,7 +171,9 @@ class InferenceWorker(QObject):
                     self._emit_performance_log_if_due()
                     continue
 
-                processing_ms = (monotonic() - started_at) * 1000.0
+                # Timestamp immediately after gesture inference finishes for this frame.
+                finished_at = monotonic()
+                processing_ms = (finished_at - started_at) * 1000.0
                 freshness_ms = max(0, int((monotonic() - submitted_at) * 1000.0))
                 self._processed_frames_since_log += 1
                 self._processing_total_ms += processing_ms
@@ -171,6 +185,10 @@ class InferenceWorker(QObject):
                         processing_ms=processing_ms,
                         input_shape=input_shape,
                         inference_shape=inference_shape,
+                        t_frame_capture=captured_at,
+                        t_buffer_submit=submitted_at,
+                        t_inference_start=started_at,
+                        t_inference_done=finished_at,
                     )
                 )
                 self._emit_performance_log_if_due()

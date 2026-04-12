@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import AppConfig
+from app.models.rc_state import RcState
 from app.services.api_client import ApiClient
 
 
@@ -43,22 +44,41 @@ class CommandController:
                 "rc",
                 {"left_right": 0, "forward_back": 0, "up_down": 0, "yaw": 0},
             )
-        if command_name in {"forward", "left", "right"}:
+        movement_state = self.build_gesture_movement_state(command_name)
+        if movement_state is not None:
+            payload = movement_state.to_payload()
             return self.send_named_command(
-                command_name,
-                {"distance_cm": self.config.gesture_move_distance_cm},
-            )
-        if command_name == "rotate_right":
-            return self.send_named_command(
-                "cw",
-                {"degrees": self.config.gesture_rotation_degrees},
-            )
-        if command_name == "rotate_left":
-            return self.send_named_command(
-                "ccw",
-                {"degrees": self.config.gesture_rotation_degrees},
+                "rc",
+                {
+                    "left_right": payload["lr"],
+                    "forward_back": payload["fb"],
+                    "up_down": payload["ud"],
+                    "yaw": payload["yaw"],
+                },
             )
         return self.send_named_command(command_name)
+
+    def build_gesture_movement_state(self, command_name: str) -> RcState | None:
+        speed = max(0, min(100, int(self.config.gesture_movement_rc_speed)))
+        if command_name in {"stop", "hover"}:
+            return RcState()
+        if command_name == "forward":
+            return RcState(fb=speed)
+        if command_name == "back":
+            return RcState(fb=-speed)
+        if command_name == "left":
+            return RcState(lr=-speed)
+        if command_name == "right":
+            return RcState(lr=speed)
+        if command_name == "up":
+            return RcState(ud=speed)
+        if command_name == "down":
+            return RcState(ud=-speed)
+        if command_name == "rotate_right":
+            return RcState(yaw=speed)
+        if command_name == "rotate_left":
+            return RcState(yaw=-speed)
+        return None
 
     def send_named_command(self, command: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.api_client.send_command(command, args)

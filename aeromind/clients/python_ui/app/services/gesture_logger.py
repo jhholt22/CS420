@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,28 @@ class _CsvTarget:
     path: Path
     file: object
     writer: csv.DictWriter
+
+
+@dataclass(slots=True)
+class _LatencySummary:
+    samples: list[int]
+
+    def add(self, value: int | None) -> None:
+        if value is None:
+            return
+        self.samples.append(int(value))
+
+    def describe(self) -> str | None:
+        if not self.samples:
+            return None
+        ordered = sorted(self.samples)
+        return (
+            f"n={len(ordered)} "
+            f"avg={round(sum(ordered) / len(ordered), 1)} "
+            f"median={round(statistics.median(ordered), 1)} "
+            f"min={ordered[0]} "
+            f"max={ordered[-1]}"
+        )
 
 
 class GestureLogger:
@@ -36,6 +59,15 @@ class GestureLogger:
         "confidence",
         "stable_ms",
         "stable_hits",
+        "t_frame_capture",
+        "t_inference_done",
+        "t_stable_ready",
+        "t_command_dispatch_start",
+        "t_command_dispatch_end",
+        "api_roundtrip_ms",
+        "vision_to_stable_ms",
+        "stable_to_dispatch_ms",
+        "total_client_pipeline_ms",
         "threshold",
         "resolved_command",
         "dispatch_allowed",
@@ -67,6 +99,14 @@ class GestureLogger:
         self._session_active = False
         self._flush_every_rows = max(1, int(flush_every_rows))
         self._pending_rows = 0
+        self._latency_summaries = {
+            "vision_to_stable_ms": _LatencySummary([]),
+            "stable_to_dispatch_ms": _LatencySummary([]),
+            "api_roundtrip_ms": _LatencySummary([]),
+            "total_client_pipeline_ms": _LatencySummary([]),
+            "e2e_latency_ms": _LatencySummary([]),
+        }
+        self._summary_printed = False
         root_path = Path(__file__).resolve().parents[4]
         default_log_path = root_path / self._LOG_DIR / self._DEFAULT_FILENAME
         self._run_log_path = root_path / self._LOG_DIR / self._RUN_FILENAME_TEMPLATE.format(run_id=self.run_id)
@@ -134,6 +174,7 @@ class GestureLogger:
         targets = getattr(self, "_targets", None)
         if not targets:
             return
+        self._print_latency_summary()
         self.flush()
         for target in targets:
             target.file.close()
@@ -182,9 +223,11 @@ class GestureLogger:
 
     def start_session(self) -> None:
         self._session_active = True
+        self._summary_printed = False
 
     def end_session(self) -> None:
         self._session_active = False
+        self._print_latency_summary()
 
     def is_session_active(self) -> bool:
         return self._session_active
@@ -203,6 +246,15 @@ class GestureLogger:
             confidence=None,
             stable_ms=None,
             stable_hits=None,
+            t_frame_capture=None,
+            t_inference_done=None,
+            t_stable_ready=None,
+            t_command_dispatch_start=None,
+            t_command_dispatch_end=None,
+            api_roundtrip_ms=None,
+            vision_to_stable_ms=None,
+            stable_to_dispatch_ms=None,
+            total_client_pipeline_ms=None,
             threshold=None,
             resolved_command=None,
             dispatch_allowed=None,
@@ -232,6 +284,15 @@ class GestureLogger:
             confidence=None,
             stable_ms=None,
             stable_hits=None,
+            t_frame_capture=None,
+            t_inference_done=None,
+            t_stable_ready=None,
+            t_command_dispatch_start=None,
+            t_command_dispatch_end=None,
+            api_roundtrip_ms=None,
+            vision_to_stable_ms=None,
+            stable_to_dispatch_ms=None,
+            total_client_pipeline_ms=None,
             threshold=None,
             resolved_command=None,
             dispatch_allowed=None,
@@ -261,6 +322,15 @@ class GestureLogger:
         confidence: float | None = None,
         stable_ms: int | None = None,
         stable_hits: int | None = None,
+        t_frame_capture: int | None = None,
+        t_inference_done: int | None = None,
+        t_stable_ready: int | None = None,
+        t_command_dispatch_start: int | None = None,
+        t_command_dispatch_end: int | None = None,
+        api_roundtrip_ms: int | None = None,
+        vision_to_stable_ms: int | None = None,
+        stable_to_dispatch_ms: int | None = None,
+        total_client_pipeline_ms: int | None = None,
         threshold: float | None = None,
         resolved_command: str | None = None,
         dispatch_allowed: bool | None = None,
@@ -284,6 +354,15 @@ class GestureLogger:
             confidence=confidence,
             stable_ms=stable_ms,
             stable_hits=stable_hits,
+            t_frame_capture=t_frame_capture,
+            t_inference_done=t_inference_done,
+            t_stable_ready=t_stable_ready,
+            t_command_dispatch_start=t_command_dispatch_start,
+            t_command_dispatch_end=t_command_dispatch_end,
+            api_roundtrip_ms=api_roundtrip_ms,
+            vision_to_stable_ms=vision_to_stable_ms,
+            stable_to_dispatch_ms=stable_to_dispatch_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
             threshold=threshold,
             resolved_command=resolved_command,
             dispatch_allowed=dispatch_allowed,
@@ -313,6 +392,15 @@ class GestureLogger:
         confidence: float | None = None,
         stable_ms: int | None = None,
         stable_hits: int | None = None,
+        t_frame_capture: int | None = None,
+        t_inference_done: int | None = None,
+        t_stable_ready: int | None = None,
+        t_command_dispatch_start: int | None = None,
+        t_command_dispatch_end: int | None = None,
+        api_roundtrip_ms: int | None = None,
+        vision_to_stable_ms: int | None = None,
+        stable_to_dispatch_ms: int | None = None,
+        total_client_pipeline_ms: int | None = None,
         threshold: float | None = None,
         resolved_command: str | None = None,
         dispatch_allowed: bool | None = None,
@@ -340,6 +428,15 @@ class GestureLogger:
             confidence=confidence,
             stable_ms=stable_ms,
             stable_hits=stable_hits,
+            t_frame_capture=t_frame_capture,
+            t_inference_done=t_inference_done,
+            t_stable_ready=t_stable_ready,
+            t_command_dispatch_start=t_command_dispatch_start,
+            t_command_dispatch_end=t_command_dispatch_end,
+            api_roundtrip_ms=api_roundtrip_ms,
+            vision_to_stable_ms=vision_to_stable_ms,
+            stable_to_dispatch_ms=stable_to_dispatch_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
             threshold=threshold,
             resolved_command=resolved_command,
             dispatch_allowed=dispatch_allowed,
@@ -367,6 +464,15 @@ class GestureLogger:
         drone_state: str | None = None,
         battery_pct: int | None = None,
         height_cm: int | None = None,
+        t_frame_capture: int | None = None,
+        t_inference_done: int | None = None,
+        t_stable_ready: int | None = None,
+        t_command_dispatch_start: int | None = None,
+        t_command_dispatch_end: int | None = None,
+        api_roundtrip_ms: int | None = None,
+        vision_to_stable_ms: int | None = None,
+        stable_to_dispatch_ms: int | None = None,
+        total_client_pipeline_ms: int | None = None,
         command_ts_ms: int | None = None,
         ack_ts_ms: int | None = None,
         drone_motion_ts_ms: int | None = None,
@@ -384,6 +490,15 @@ class GestureLogger:
             confidence=None,
             stable_ms=None,
             stable_hits=None,
+            t_frame_capture=t_frame_capture,
+            t_inference_done=t_inference_done,
+            t_stable_ready=t_stable_ready,
+            t_command_dispatch_start=t_command_dispatch_start,
+            t_command_dispatch_end=t_command_dispatch_end,
+            api_roundtrip_ms=api_roundtrip_ms,
+            vision_to_stable_ms=vision_to_stable_ms,
+            stable_to_dispatch_ms=stable_to_dispatch_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
             threshold=None,
             resolved_command=None,
             dispatch_allowed=None,
@@ -414,6 +529,15 @@ class GestureLogger:
         confidence: float | None,
         stable_ms: int | None,
         stable_hits: int | None,
+        t_frame_capture: int | None,
+        t_inference_done: int | None,
+        t_stable_ready: int | None,
+        t_command_dispatch_start: int | None,
+        t_command_dispatch_end: int | None,
+        api_roundtrip_ms: int | None,
+        vision_to_stable_ms: int | None,
+        stable_to_dispatch_ms: int | None,
+        total_client_pipeline_ms: int | None,
         threshold: float | None,
         resolved_command: str | None,
         dispatch_allowed: bool | None,
@@ -447,6 +571,15 @@ class GestureLogger:
             "confidence": self._normalize_float(confidence),
             "stable_ms": self._normalize_int(stable_ms),
             "stable_hits": self._normalize_int(stable_hits),
+            "t_frame_capture": self._normalize_int(t_frame_capture),
+            "t_inference_done": self._normalize_int(t_inference_done),
+            "t_stable_ready": self._normalize_int(t_stable_ready),
+            "t_command_dispatch_start": self._normalize_int(t_command_dispatch_start),
+            "t_command_dispatch_end": self._normalize_int(t_command_dispatch_end),
+            "api_roundtrip_ms": self._normalize_int(api_roundtrip_ms),
+            "vision_to_stable_ms": self._normalize_int(vision_to_stable_ms),
+            "stable_to_dispatch_ms": self._normalize_int(stable_to_dispatch_ms),
+            "total_client_pipeline_ms": self._normalize_int(total_client_pipeline_ms),
             "threshold": self._normalize_float(threshold),
             "resolved_command": self._normalize_text(resolved_command),
             "dispatch_allowed": self._normalize_bool(dispatch_allowed),
@@ -466,6 +599,14 @@ class GestureLogger:
             "notes": self._notes if notes is None else self._normalize_optional_text(notes),
         }
         self._append_row(row)
+        self._record_latency_samples(
+            event_type=event_type,
+            vision_to_stable_ms=vision_to_stable_ms,
+            stable_to_dispatch_ms=stable_to_dispatch_ms,
+            api_roundtrip_ms=api_roundtrip_ms,
+            total_client_pipeline_ms=total_client_pipeline_ms,
+            e2e_latency_ms=e2e_latency_ms,
+        )
         self._pending_rows += 1
         if self._pending_rows >= self._flush_every_rows:
             self.flush()
@@ -524,3 +665,42 @@ class GestureLogger:
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 raise
+
+    def _record_latency_samples(
+        self,
+        *,
+        event_type: str,
+        vision_to_stable_ms: int | None,
+        stable_to_dispatch_ms: int | None,
+        api_roundtrip_ms: int | None,
+        total_client_pipeline_ms: int | None,
+        e2e_latency_ms: int | None,
+    ) -> None:
+        if event_type not in {"gesture_ready", "command_dispatch", "motion_observed"}:
+            return
+        self._latency_summaries["vision_to_stable_ms"].add(vision_to_stable_ms)
+        self._latency_summaries["stable_to_dispatch_ms"].add(stable_to_dispatch_ms)
+        self._latency_summaries["api_roundtrip_ms"].add(api_roundtrip_ms)
+        self._latency_summaries["total_client_pipeline_ms"].add(total_client_pipeline_ms)
+        self._latency_summaries["e2e_latency_ms"].add(e2e_latency_ms)
+
+    def _print_latency_summary(self) -> None:
+        if self._summary_printed:
+            return
+        summary_lines: list[str] = []
+        for metric_name, summary in self._latency_summaries.items():
+            description = summary.describe()
+            if description is None:
+                continue
+            summary_lines.append(f"{metric_name} {description}")
+        if not summary_lines:
+            return
+        print("[LATENCY SUMMARY]", flush=True)
+        for line in summary_lines:
+            print(f"[LATENCY SUMMARY] {line}", flush=True)
+        gesture_debug_log(
+            "gesture_logger.latency_summary",
+            run_id=self.run_id,
+            summary=" | ".join(summary_lines),
+        )
+        self._summary_printed = True

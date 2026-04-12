@@ -141,6 +141,9 @@ class VideoWorker(QObject):
             if frame is None:
                 return False
 
+            # Timestamp as close as possible to the successful capture/read boundary.
+            frame_captured_at = monotonic()
+
             if not self._logged_first_good_frame:
                 self._logged_first_good_frame = True
                 event_name = "video.webcam_first_frame" if self._source.kind == "webcam" else "video.first_good_frame"
@@ -158,7 +161,7 @@ class VideoWorker(QObject):
                 inference_frame = frame.copy()
                 try:
                     if self.frame_sink is not None:
-                        self.frame_sink(inference_frame)
+                        self.frame_sink(inference_frame, frame_captured_at=frame_captured_at)
                     else:
                         self.rawFrameReady.emit(inference_frame)
                 except Exception as exc:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.models.video_source import VideoSourceSpec
 
@@ -24,10 +24,29 @@ DEBUG_BYPASS_STABILITY = False
 DEBUG_BYPASS_MIN_CONFIDENCE = 0.55
 GESTURE_MOVE_DISTANCE_CM = 50
 GESTURE_ROTATION_DEGREES = 90
+# Gesture control timing block.
+# Keep all gesture responsiveness tuning in one place so control feel can be
+# adjusted without editing controller logic.
+GESTURE_ONE_SHOT_STABILIZATION_MS = 220
+GESTURE_MOVEMENT_STABILIZATION_MS = 90
+GESTURE_MOVEMENT_RESEND_INTERVAL_MS = 80
+GESTURE_MOVEMENT_COOLDOWN_MS = 80
+GESTURE_MOVEMENT_FAST_PATH_CONFIDENCE = 0.84
+GESTURE_MOVEMENT_RC_SPEED = 35
 INFERENCE_INPUT_WIDTH = 320
 INFERENCE_INPUT_HEIGHT = 240
 INFERENCE_PROCESS_EVERY_NTH_FRAME = 1
 INFERENCE_MAX_PENDING_FRAMES = 1
+
+
+@dataclass(slots=True)
+class GestureControlTimingConfig:
+    one_shot_stabilization_ms: int = GESTURE_ONE_SHOT_STABILIZATION_MS
+    movement_stabilization_ms: int = GESTURE_MOVEMENT_STABILIZATION_MS
+    movement_resend_interval_ms: int = GESTURE_MOVEMENT_RESEND_INTERVAL_MS
+    movement_cooldown_ms: int = GESTURE_MOVEMENT_COOLDOWN_MS
+    movement_fast_path_confidence: float = GESTURE_MOVEMENT_FAST_PATH_CONFIDENCE
+    movement_rc_speed: int = GESTURE_MOVEMENT_RC_SPEED
 
 
 @dataclass(slots=True)
@@ -52,10 +71,35 @@ class AppConfig:
     debug_bypass_min_confidence: float = DEBUG_BYPASS_MIN_CONFIDENCE
     gesture_move_distance_cm: int = GESTURE_MOVE_DISTANCE_CM
     gesture_rotation_degrees: int = GESTURE_ROTATION_DEGREES
+    gesture_timing: GestureControlTimingConfig = field(default_factory=GestureControlTimingConfig)
     inference_input_width: int = INFERENCE_INPUT_WIDTH
     inference_input_height: int = INFERENCE_INPUT_HEIGHT
     inference_process_every_nth_frame: int = INFERENCE_PROCESS_EVERY_NTH_FRAME
     inference_max_pending_frames: int = INFERENCE_MAX_PENDING_FRAMES
+
+    @property
+    def gesture_one_shot_stabilization_ms(self) -> int:
+        return self.gesture_timing.one_shot_stabilization_ms
+
+    @property
+    def gesture_movement_stabilization_ms(self) -> int:
+        return self.gesture_timing.movement_stabilization_ms
+
+    @property
+    def gesture_movement_resend_interval_ms(self) -> int:
+        return self.gesture_timing.movement_resend_interval_ms
+
+    @property
+    def gesture_movement_cooldown_ms(self) -> int:
+        return self.gesture_timing.movement_cooldown_ms
+
+    @property
+    def gesture_movement_fast_path_confidence(self) -> float:
+        return self.gesture_timing.movement_fast_path_confidence
+
+    @property
+    def gesture_movement_rc_speed(self) -> int:
+        return self.gesture_timing.movement_rc_speed
 
     def drone_video_source(self) -> VideoSourceSpec:
         return VideoSourceSpec.mjpeg(self.video_url)
