@@ -19,14 +19,14 @@ class GestureDispatchDecision:
 
 class GestureController:
     """Maps stabilized gestures to command behaviors through one decision path."""
+
     _TERMINAL_COMMANDS = frozenset({"takeoff", "land", "emergency"})
-    _CONTINUOUS_COMMANDS = frozenset({"forward", "back", "left", "right", "rotate_left", "rotate_right", "up", "down"})
+    _CONTINUOUS_COMMANDS = frozenset(
+        {"forward", "back", "left", "right", "rotate_left", "rotate_right", "up", "down"}
+    )
     _NEUTRAL_COMMANDS = frozenset({"stop", "hover"})
 
-    def __init__(
-        self,
-        config: AppConfig | None = None,
-    ) -> None:
+    def __init__(self, config: AppConfig | None = None) -> None:
         self._config = config or AppConfig()
         self._enabled = False
         self.reset()
@@ -118,12 +118,15 @@ class GestureController:
     def evaluate_result(self, result: GestureInferenceResult) -> GestureDispatchDecision:
         debug_state = dict(self.update_from_result(result))
         behavior = get_gesture_behavior(result.stable_gesture)
+
         if behavior is None and result.command_name and (result.raw_gesture or "").strip().lower() == "open_palm":
             behavior = get_gesture_behavior(result.raw_gesture)
+
         if behavior is None and self._stability_gesture_name:
             committed_behavior = get_gesture_behavior(self._stability_gesture_name)
             if committed_behavior is not None and committed_behavior.behavior_type == "repeatable":
                 behavior = committed_behavior
+
         command_name = behavior.command if behavior is not None else result.command_name
         behavior_type = behavior.behavior_type if behavior is not None else None
         now = monotonic()
@@ -136,7 +139,10 @@ class GestureController:
         if not self._enabled:
             self._queue_state = "gesture_off"
             reason = "gesture_off"
-            dispatch_allowed, action, reason, command_name = self._resolve_movement_stop(now=now, reason="gesture_off")
+            dispatch_allowed, action, reason, command_name = self._resolve_movement_stop(
+                now=now,
+                reason="gesture_off",
+            )
         elif not self._detector_available:
             self._queue_state = self._detector_status
             reason = self._detector_status
@@ -190,6 +196,7 @@ class GestureController:
                 "latched_terminal_gesture": self._latched_terminal_gesture,
             }
         )
+
         gesture_debug_log(
             "controller.behavior_decision",
             gesture=result.stable_gesture or result.raw_gesture,
@@ -200,6 +207,7 @@ class GestureController:
             queue_state=self._queue_state,
             confidence=result.confidence,
         )
+
         return GestureDispatchDecision(
             command_name=command_name,
             dispatch_allowed=dispatch_allowed,
@@ -215,12 +223,14 @@ class GestureController:
         behavior = get_gesture_behavior(self._last_stable_gesture_name or self._raw_gesture)
         if command_name in {"hover", "stop"} and self._pending_movement_stop_reason is not None:
             behavior = None
+
         was_same_movement = (
             behavior is not None
             and behavior.behavior_type == "repeatable"
             and self._active_movement_command == command_name
             and self._active_movement_gesture == behavior.gesture
         )
+
         self._last_command = command_name
         self._last_command_sent = command_name
         self._last_command_timestamp = monotonic()
@@ -233,6 +243,7 @@ class GestureController:
                 self._active_repeatable_command = None
                 self._active_movement_command = None
                 self._active_movement_gesture = None
+
                 if self._is_terminal_command(command_name) and self._terminal_latch_enabled:
                     if self._latched_terminal_command is not None and self._latched_terminal_command != command_name:
                         self._clear_terminal_latch(reason="terminal_override")
@@ -246,6 +257,7 @@ class GestureController:
                         action="latched",
                         reason="terminal_latched",
                     )
+
                 gesture_debug_log(
                     "controller.oneshot_armed",
                     gesture=behavior.gesture,
@@ -254,12 +266,14 @@ class GestureController:
                     action="sent",
                     reason="one_shot_armed",
                 )
+
             elif behavior.behavior_type == "repeatable":
                 self._active_repeatable_command = command_name
                 self._active_movement_command = command_name
                 self._active_movement_gesture = behavior.gesture
                 self._last_movement_send_at = monotonic()
                 self._pending_movement_stop_reason = None
+
                 if not was_same_movement:
                     gesture_debug_log(
                         "controller.movement_state_started",
@@ -269,6 +283,7 @@ class GestureController:
                         action="active",
                         reason="movement_active",
                     )
+
             elif behavior.behavior_type == "safety":
                 self._clear_terminal_latch(reason="safety_override")
                 self._armed_oneshot_command = None
@@ -277,6 +292,7 @@ class GestureController:
                 self._active_movement_command = None
                 self._active_movement_gesture = None
                 self._pending_movement_stop_reason = None
+
                 gesture_debug_log(
                     "controller.safety_reset",
                     gesture=behavior.gesture,
@@ -285,12 +301,14 @@ class GestureController:
                     action="sent",
                     reason="safety_immediate",
                 )
+
         elif command_name in {"hover", "stop"}:
             self._clear_terminal_latch(reason="neutral_override")
             self._active_repeatable_command = None
             self._active_movement_command = None
             self._active_movement_gesture = None
             self._last_movement_send_at = monotonic()
+
             gesture_debug_log(
                 "controller.movement_state_stopped",
                 gesture=self._last_dispatched_gesture or "-",
@@ -363,22 +381,18 @@ class GestureController:
 
     @property
     def _release_window_ms(self) -> int:
-        # AppConfig.gesture_stability controls one-shot release timing.
         return max(0, int(self._config.gesture_stability.release_window_ms))
 
     @property
     def _stability_reset_debounce_ms(self) -> int:
-        # AppConfig.gesture_stability controls controller-side jitter debounce.
         return max(0, int(self._config.gesture_stability.stability_reset_debounce_ms))
 
     @property
     def _movement_resend_interval_ms(self) -> int:
-        # AppConfig.gesture_motion controls continuous movement resend cadence.
         return max(1, int(self._config.gesture_motion.movement_resend_interval_ms))
 
     @property
     def _movement_cooldown_ms(self) -> int:
-        # AppConfig.gesture_motion controls movement handoff and stop cooldown.
         return max(0, int(self._config.gesture_motion.movement_cooldown_ms))
 
     @property
@@ -386,11 +400,9 @@ class GestureController:
         return max(0, int(self._config.gesture_stability.movement_stabilization_ms))
 
     def _required_stabilization_ms(self, gesture_name: str | None) -> int:
-        # AppConfig.gesture_stability controls per-gesture stabilization gates.
         return max(0, int(self._config.gesture_stabilization_ms(gesture_name)))
 
     def _fast_path_confidence_for_gesture(self, gesture_name: str | None) -> float:
-        # AppConfig.gesture_motion controls movement fast-path confidence gates.
         return max(0.0, min(1.0, float(self._config.gesture_fast_path_confidence(gesture_name))))
 
     def _decide_behavior_action(
@@ -407,23 +419,33 @@ class GestureController:
             if self._last_dispatched_gesture == behavior.gesture and self._last_command_sent == behavior.command:
                 self._queue_state = "waiting_release"
                 return False, "waiting_release", "waiting_release"
+
             self._queue_state = "dispatch"
             self._armed_oneshot_command = None
             self._armed_oneshot_gesture = None
             self._active_repeatable_command = None
+            self._active_movement_command = None
+            self._active_movement_gesture = None
             return True, "sent", "safety_priority"
 
         if behavior.behavior_type == "one_shot":
             if self._is_terminal_command(behavior.command):
-                terminal_dispatch = self._evaluate_terminal_command(behavior=behavior, now=now, stable_ms=stable_ms)
+                terminal_dispatch = self._evaluate_terminal_command(
+                    behavior=behavior,
+                    now=now,
+                    stable_ms=stable_ms,
+                )
                 if terminal_dispatch is not None:
                     return terminal_dispatch
+
             if not self._meets_one_shot_stability(stable_ms):
                 self._queue_state = "stabilizing"
                 return False, "stabilizing", "stabilizing"
+
             if behavior.requires_release and self._armed_oneshot_command == behavior.command:
                 self._queue_state = "waiting_release"
                 return False, "waiting_release", "waiting_release"
+
             if self._last_command_sent == behavior.command and elapsed_ms < behavior.cooldown_ms:
                 self._queue_state = "cooldown"
                 gesture_debug_log(
@@ -436,6 +458,7 @@ class GestureController:
                     cooldown_remaining_ms=max(0, int(behavior.cooldown_ms - elapsed_ms)),
                 )
                 return False, "cooldown", "cooldown"
+
             if self._armed_oneshot_gesture != behavior.gesture and self._last_command_sent == behavior.command:
                 gesture_debug_log(
                     "controller.oneshot_rearmed",
@@ -445,6 +468,7 @@ class GestureController:
                     action="rearmed",
                     reason="gesture_changed",
                 )
+
             self._queue_state = "dispatch"
             return True, "sent", "one_shot_ready"
 
@@ -453,10 +477,12 @@ class GestureController:
             return False, "stabilizing", "stabilizing"
 
         resend_elapsed_ms = (now - self._last_movement_send_at) * 1000.0 if self._last_movement_send_at > 0.0 else None
+
         if self._active_movement_command == behavior.command and self._active_movement_gesture == behavior.gesture:
             if resend_elapsed_ms is not None and resend_elapsed_ms < self._movement_resend_interval_ms:
                 self._queue_state = "movement_active"
                 return False, "movement_active", "movement_active"
+
             self._queue_state = "dispatch"
             gesture_debug_log(
                 "controller.movement_resend_ready",
@@ -489,22 +515,42 @@ class GestureController:
             if self._release_started_at <= 0.0:
                 self._release_started_at = now
                 return
+
             elapsed_ms = (now - self._release_started_at) * 1000.0
             if elapsed_ms < self._release_window_ms:
                 return
+
             release_reason = "no_hand_timeout"
         else:
             self._release_started_at = 0.0
 
         released_command = self._armed_oneshot_command
         released_gesture = self._armed_oneshot_gesture
+        is_terminal = self._is_terminal_command(released_command)
+
+        # Keep terminal commands latched even if the hand disappears.
+        # This is the real fix for fist->land when the drone motion makes the hand leave frame.
+        if is_terminal and release_reason == "no_hand_timeout":
+            gesture_debug_log(
+                "controller.terminal_release_ignored",
+                gesture=released_gesture,
+                command=released_command,
+                action="ignored",
+                reason="terminal_no_hand_timeout",
+                release_marker="-",
+            )
+            return
+
         self._armed_oneshot_command = None
         self._armed_oneshot_gesture = None
         self._release_started_at = 0.0
+
         if self._terminal_release_required and self._latched_terminal_command == released_command:
             self._clear_terminal_latch(reason=release_reason)
+
         if self._active_repeatable_command is not None and current_marker != self._last_active_gesture:
             self._active_repeatable_command = None
+
         gesture_debug_log(
             "controller.oneshot_released",
             gesture=released_gesture,
@@ -580,6 +626,7 @@ class GestureController:
     ) -> tuple[bool, str, str, str | None]:
         if self._active_movement_command is None:
             return False, "blocked", reason, None
+
         if self._pending_movement_stop_reason is None:
             self._pending_movement_stop_reason = reason
             gesture_debug_log(
@@ -588,10 +635,12 @@ class GestureController:
                 command=self._active_movement_command,
                 reason=reason,
             )
+
         resend_elapsed_ms = (now - self._last_movement_send_at) * 1000.0 if self._last_movement_send_at > 0.0 else None
         if resend_elapsed_ms is not None and resend_elapsed_ms < self._movement_cooldown_ms:
             self._queue_state = "movement_stop_pending"
             return False, "movement_stop_pending", "movement_stop_pending", "hover"
+
         self._queue_state = "dispatch"
         return True, "sent", self._pending_movement_stop_reason or reason, "hover"
 
@@ -620,9 +669,11 @@ class GestureController:
     ) -> tuple[bool, str, str] | None:
         if not self._terminal_latch_enabled:
             return None
+
         if not self._meets_one_shot_stability(stable_ms):
             self._queue_state = "stabilizing"
             return False, "stabilizing", "stabilizing"
+
         if self._latched_terminal_command == behavior.command:
             self._queue_state = "terminal_latched"
             gesture_debug_log(
@@ -633,18 +684,21 @@ class GestureController:
                 reason="already_latched",
             )
             return False, "terminal_latched", "already_latched"
+
         if self._last_command_sent == behavior.command:
             elapsed_ms = (now - self._last_command_timestamp) * 1000.0
             cooldown_ms = max(int(behavior.cooldown_ms), self._terminal_command_cooldown_ms)
             if elapsed_ms < cooldown_ms:
                 self._queue_state = "cooldown"
                 return False, "cooldown", "cooldown"
+
         self._queue_state = "dispatch"
         return True, "sent", "terminal_ready"
 
     def _clear_terminal_latch(self, *, reason: str) -> None:
         if self._latched_terminal_command is None:
             return
+
         gesture_debug_log(
             "controller.terminal_command_released",
             gesture=self._latched_terminal_gesture or "-",

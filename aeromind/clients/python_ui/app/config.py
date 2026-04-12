@@ -9,10 +9,9 @@ API_BASE = "http://127.0.0.1:5000/api"
 STATUS_REFRESH_MS = 1000
 VIDEO_URL = "http://127.0.0.1:8080/video"
 
-# Keep sim and gesture sources separated by default.
-# If you intentionally want both to use the same webcam, set both to 0 explicitly.
+# Keep this 0 unless you really have a second camera dedicated to gestures.
 SIM_WEBCAM_INDEX = 0
-GESTURE_WEBCAM_INDEX = 1
+GESTURE_WEBCAM_INDEX = 0
 
 VIDEO_RECONNECT_DELAY_MS = 1000
 VIDEO_READ_INTERVAL_MS = 40
@@ -59,8 +58,10 @@ class GestureStabilityConfig:
         }
     )
     stability_reset_debounce_ms: int = 150
-    release_window_ms: int = 220
-    hover_stop_grace_ms: int = 400
+
+    # More forgiving so one-shot gestures do not get released instantly on hand loss.
+    release_window_ms: int = 500
+    hover_stop_grace_ms: int = 500
     hover_command_cooldown_ms: int = 1000
 
     def stabilization_ms_for_gesture(self, gesture_name: str | None, *, behavior_type: str | None) -> int:
@@ -112,8 +113,12 @@ class GestureMotionConfig:
 class GestureTerminalConfig:
     # Terminal one-shot latching and duplicate suppression live here.
     terminal_command_latch_enabled: bool = True
-    terminal_command_cooldown_ms: int = 3000
-    terminal_command_release_required: bool = True
+    terminal_command_cooldown_ms: int = 4000
+
+    # Critical fix:
+    # terminal commands should not require the hand to remain visible
+    # because land/takeoff naturally make the frame change.
+    terminal_command_release_required: bool = False
 
 
 @dataclass(slots=True)
@@ -151,6 +156,7 @@ class AppConfig:
     video_backend_prefer_ffmpeg: bool = VIDEO_BACKEND_PREFER_FFMPEG
     gesture_log_flush_rows: int = GESTURE_LOG_FLUSH_ROWS
     performance_log_interval_ms: int = PERFORMANCE_LOG_INTERVAL_MS
+
     gesture_thresholds: GestureThresholdConfig = field(default_factory=GestureThresholdConfig)
     gesture_stability: GestureStabilityConfig = field(default_factory=GestureStabilityConfig)
     gesture_motion: GestureMotionConfig = field(default_factory=GestureMotionConfig)
@@ -177,7 +183,10 @@ class AppConfig:
     def gesture_stabilization_ms(self, gesture_name: str | None) -> int:
         behavior = get_gesture_behavior(gesture_name)
         behavior_type = behavior.behavior_type if behavior is not None else None
-        return self.gesture_stability.stabilization_ms_for_gesture(gesture_name, behavior_type=behavior_type)
+        return self.gesture_stability.stabilization_ms_for_gesture(
+            gesture_name,
+            behavior_type=behavior_type,
+        )
 
     def gesture_fast_path_confidence(self, gesture_name: str | None) -> float:
         return self.gesture_motion.fast_path_confidence_for_gesture(gesture_name)
