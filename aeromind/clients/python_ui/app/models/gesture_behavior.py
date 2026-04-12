@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.gestures.registry import GESTURE_REGISTRY
 
 GestureBehaviorType = Literal["one_shot", "repeatable", "safety"]
 
@@ -15,71 +16,15 @@ class GestureBehavior:
     cooldown_ms: int
     requires_release: bool
 
-
 GESTURE_BEHAVIOR_CONFIG: dict[str, GestureBehavior] = {
-    "open_palm": GestureBehavior(
-        gesture="open_palm",
-        command="hover",
-        behavior_type="safety",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "thumbs_up": GestureBehavior(
-        gesture="thumbs_up",
-        command="takeoff",
-        behavior_type="one_shot",
-        cooldown_ms=4000,
-        requires_release=False,
-    ),
-    "fist": GestureBehavior(
-        gesture="fist",
-        command="land",
-        behavior_type="one_shot",
-        cooldown_ms=4000,
-        requires_release=False,
-    ),
-    "point_up": GestureBehavior(
-        gesture="point_up",
-        command="forward",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "point_down": GestureBehavior(
-        gesture="point_down",
-        command="back",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "point_left": GestureBehavior(
-        gesture="point_left",
-        command="left",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "point_right": GestureBehavior(
-        gesture="point_right",
-        command="right",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "l_shape_right": GestureBehavior(
-        gesture="l_shape_right",
-        command="up",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
-    "l_shape_left": GestureBehavior(
-        gesture="l_shape_left",
-        command="down",
-        behavior_type="repeatable",
-        cooldown_ms=0,
-        requires_release=False,
-    ),
+    gesture.internal_name: GestureBehavior(
+        gesture=gesture.internal_name,
+        command=gesture.command,
+        behavior_type=gesture.behavior_type,
+        cooldown_ms=gesture.cooldown_ms,
+        requires_release=gesture.requires_release,
+    )
+    for gesture in GESTURE_REGISTRY
 }
 
 

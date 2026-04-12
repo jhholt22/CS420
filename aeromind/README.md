@@ -2,12 +2,12 @@
 
 AeroMind is a modular drone control system for the DJI Tello (SDK 2.0).
 
-It is designed with a clean separation between:
+It is built with a clean separation between:
 
-- **Server** → drone control, REST API, simulator, video streaming  
-- **Client** → desktop UI, gesture inference, command dispatch  
+* **Server** → drone control, REST API, simulator, video streaming
+* **Client** → desktop UI, gesture inference, command dispatch
 
-The project focuses on **real-time control and research**, especially exploring:
+The project focuses on **real-time control and research**, especially:
 
 > Can hand-gesture control be reliable and safe for real-time drone operation?
 
@@ -15,7 +15,7 @@ The project focuses on **real-time control and research**, especially exploring:
 
 ## 🧠 Architecture
 
-```text
+```
 Client (PySide6 UI)
     ↓
 HTTP API (Flask + Swagger)
@@ -31,7 +31,7 @@ Video Stream (MJPEG)
 
 ## 📁 Project Structure
 
-```text
+```
 server/
   api/            # REST API (Flask + Swagger)
   core/           # Controller, drone logic, simulator, safety
@@ -41,21 +41,21 @@ clients/
   python_ui/      # PySide6 UI + gesture inference
 
 data/
-  logs/           # Research / runtime logs (if enabled)
+  logs/           # Research / runtime logs
 ```
 
 ---
 
 ## ⚙️ Features
 
-- Flask REST API  
-- Swagger docs → /api/docs  
-- MJPEG video stream → /video  
-- Simulator mode (safe testing)  
-- DJI Tello integration  
-- PySide6 desktop UI  
-- Virtual joystick + manual controls  
-- Experimental gesture recognition (MediaPipe-based)  
+* Flask REST API
+* Swagger docs → `/api/docs`
+* MJPEG video stream → `/video`
+* Simulator mode (safe testing)
+* DJI Tello integration
+* PySide6 desktop UI
+* Virtual joystick + manual controls
+* Gesture control (MediaPipe-based)
 
 ---
 
@@ -86,8 +86,9 @@ python clients/python_ui/main.py
 ### 3. Start controller
 
 From UI:
-- Start Sim → safe testing  
-- Start Drone → real drone  
+
+* Start Sim → safe testing
+* Start Drone → real drone
 
 ---
 
@@ -101,51 +102,137 @@ http://127.0.0.1:8080/video
 
 ## 🎮 Controls
 
-- Takeoff / Land  
-- Emergency stop  
-- Virtual joystick  
-- Start / Stop controller  
+* Takeoff / Land
+* Emergency stop
+* Virtual joystick
+* Start / Stop controller
 
 ---
 
 ## ✋ Gesture Control (Experimental)
 
-Uses MediaPipe for hand tracking.
+Gesture control uses **MediaPipe Gesture Recognizer + hand landmark direction logic**.
 
-Supported gestures:
-| Gesture Name        | Shape Description               | Command          | Type       | Behavior                     |
-| ------------------- | ------------------------------- | ---------------- | ---------- | ---------------------------- |
-| **thumbs_up**       | Thumb up, others folded         | `takeoff`        | One-shot   | Fires once, requires release | try left hand 
-| **fist**            | All fingers folded              | `land`           | One-shot   | Fires once, requires release | work
-| **open_palm**       | All fingers extended            | `stop` / neutral | Safety     | Stops movement / resets      | work
-| **point_up**        | Index up, others folded         | `forward`        | Repeatable | Moves forward with cooldown  | work
-| **point_left**      | Index pointing left             | `left`           | Repeatable | Moves left with cooldown     | 
-| **point_right**     | Index pointing right            | `right`          | Repeatable | Moves right with cooldown    |
-| **L-shape (right)** | Thumb + index (L shape → right) | `rotate_right`   | Repeatable | Rotates right in bursts      |
-| **L-shape (left)**  | Thumb + index (L shape → left)  | `rotate_left`    | Repeatable | Rotates left in bursts       |
+### Supported Gestures (Current Build)
 
+| Gesture         | Description          | Command   | Type       | Behavior                 |
+| --------------- | -------------------- | --------- | ---------- | ------------------------ |
+| ✋ **open_palm** | All fingers extended | `hover`   | Safety     | Stops movement / neutral |
+| ✊ **fist**      | All fingers folded   | `land`    | One-shot   | Lands once, latched      |
+| ✌️ **victory**  | Two fingers up       | `takeoff` | One-shot   | Takes off once, latched  |
+| ☝️ **point_up** | Index finger up      | `forward` | Repeatable | Moves forward            |
+
+---
+
+### Directional Control (Tilt-Based)
+
+Directional movement is derived from **hand orientation**, not separate gestures:
+
+| Gesture       | Action  |
+| ------------- | ------- |
+| ☝️ neutral    | forward |
+| ☝️ tilt left  | left    |
+| ☝️ tilt right | right   |
+
+👉 Uses hand landmarks (wrist → index direction)
+
+---
+
+### Gesture Design Principles
+
+* **Terminal commands (takeoff / land)**
+
+  * Trigger once
+  * Do NOT require continuous gesture
+  * Protected from accidental override
+
+* **Safety gesture (open_palm)**
+
+  * Always safe fallback
+  * Stops movement
+
+* **Movement gestures**
+
+  * Continuous
+  * Controlled by stabilization + cooldown
+
+---
+
+### Gesture Mapping (Final)
+
+```
+Open palm      → Hover / Stop
+Victory        → Takeoff
+Fist           → Land
+Pointing up    → Forward
+Point + tilt L → Left
+Point + tilt R → Right
+No gesture     → No command
+```
+
+---
+
+## 🎥 Gesture Camera
+
+* Gesture detection uses **webcam**
+* Video display can remain **drone stream**
+
+Config:
+
+```python
+gesture_webcam_index = 0
+```
 
 ---
 
 ## ⚠️ Notes
 
-Gesture control is experimental and may not always trigger commands reliably.
- 
+* Gesture control is **experimental**
+* Always test in **Simulator mode first**
+* Avoid using gestures in unstable lighting conditions
+* Keep gestures **clear and consistent**
 
+---
 
-## Gesture camera source
+## 🧪 Research Focus
 
-The live display can stay on the drone camera while gesture detection now reads from your computer webcam (`gesture_webcam_index`, default `0`).
+This project explores:
 
+* Gesture recognition reliability
+* Real-time control stability
+* Human-drone interaction models
+* Safety constraints in gesture-based control
 
-Gesture mapping for this build:
-- Open palm -> Takeoff
-- Point down -> Land
-- Fist -> Hover / Stop
-- Point up -> Move forward
-- Point left -> Move left
-- Point right -> Move right
-- L shape right -> Move up
-- L shape left -> Move down
-- No visible command -> Hover / Stop
-- Gesture tracking camera -> computer webcam
+---
+
+## 🔥 Current Status
+
+* GestureRecognizer integrated ✅
+* Terminal command locking working ✅
+* Tilt-based control implemented ⚙️
+* Stability tuning in progress ⚙️
+
+---
+
+## 📌 Future Improvements
+
+* Smoother motion control (velocity scaling)
+* Custom gesture training
+* Multi-hand interaction
+* UI gesture debug overlay
+* Adaptive thresholds (lighting / distance)
+
+---
+
+## 👨‍💻 Author
+
+Sayed Jihad Al Sayed
+
+---
+
+## 🧠 Final Note
+
+This system is designed to **fail safe, not fail fast**.
+
+If gesture recognition is uncertain →
+👉 the drone should do nothing, not something wrong.

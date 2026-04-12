@@ -10,7 +10,12 @@ from typing import Any, Deque, Literal
 
 import cv2
 from app.config import AppConfig
-from app.models.gesture_behavior import GESTURE_BEHAVIOR_CONFIG, get_gesture_behavior
+from app.gestures.registry import (
+    GESTURE_REGISTRY,
+    SUPPORTED_GESTURES,
+    get_gesture_definition,
+    get_gesture_definition_by_recognizer_label,
+)
 from app.utils.logging_utils import gesture_debug_log
 
 
@@ -65,24 +70,24 @@ class GestureInferenceResult:
     detector_model_path: str | None
 
 
+@dataclass(slots=True)
+class _RecognizerSample:
+    recognizer_label: str | None
+    mapped_gesture: str | None
+    confidence: float | None
+    tilt_value: float | None
+    movement_direction: str | None
+    wrist_x: float | None
+    index_tip_x: float | None
+
+
 class GestureInferenceService:
     _NOISE_MARKER = "__noise__"
     _RECOGNIZER_RESULT_TIMEOUT_S = 0.25
-    _SUPPORTED_GESTURES = frozenset(
-        {
-            "open_palm",
-            "fist",
-            "thumbs_up",
-            "point_up",
-            "point_down",
-            "point_left",
-            "point_right",
-            "l_shape_right",
-            "l_shape_left",
-        }
-    )
+    _LEFT_TILT_THRESHOLD = -0.15
+    _RIGHT_TILT_THRESHOLD = 0.15
     _GESTURE_COMMAND_MAP = {
-        gesture_name: behavior.command for gesture_name, behavior in GESTURE_BEHAVIOR_CONFIG.items()
+        gesture.internal_name: gesture.command for gesture in GESTURE_REGISTRY
     }
     _INIT_LOGGED = False
 
@@ -122,7 +127,7 @@ class GestureInferenceService:
         self._init_attempted = False
         self._detector_unavailable_logged = False
         self._recognition_condition = Condition()
-        self._pending_recognition: dict[int, tuple[str | None, float | None]] = {}
+        self._pending_recognition: dict[int, _RecognizerSample] = {}
         self._last_timestamp_ms = 0
 
         if not self.__class__._INIT_LOGGED:
@@ -194,7 +199,10 @@ class GestureInferenceService:
             with self._recognition_condition:
                 self._pending_recognition.pop(timestamp_ms, None)
             self._recognizer.recognize_async(mp_image, timestamp_ms)
-            recognizer_label, raw_gesture, confidence = self._await_recognition_result(timestamp_ms)
+            recognition = self._await_recognition_result(timestamp_ms)
+            recognizer_label = recognition.recognizer_label
+            raw_gesture = recognition.mapped_gesture
+            confidence = recognition.confidence
             gesture_debug_log(
                 "inference.process_ok",
                 frame_shape=frame_shape,
@@ -204,6 +212,8 @@ class GestureInferenceService:
                 recognizer_label=recognizer_label,
                 raw_gesture=raw_gesture,
                 confidence=confidence,
+                tilt_value=recognition.tilt_value,
+                movement_direction=recognition.movement_direction,
             )
         except Exception as exc:
             gesture_debug_log(
@@ -275,13 +285,23 @@ class GestureInferenceService:
 
         self._history.append(raw_gesture)
         stable_gesture, stable_hits = self._stabilize_gesture(with_count=True)
+        stable_gesture_for_command = stable_gesture
+        if stable_gesture == "point_up":
+            stable_gesture_for_command = self._resolve_point_up_direction(
+                confidence=confidence,
+                stable_gesture=stable_gesture,
+                recognizer_label=recognizer_label,
+                tilt_value=recognition.tilt_value,
+                wrist_x=recognition.wrist_x,
+                index_tip_x=recognition.index_tip_x,
+            )
         command_name, queue_state, required_hits, required_confidence = self._resolve_command(
             raw_gesture,
-            stable_gesture,
+            stable_gesture_for_command,
             stable_hits,
             confidence,
         )
-        stable_gesture_out = None if queue_state == "low_confidence" else stable_gesture
+        stable_gesture_out = None if queue_state == "low_confidence" else stable_gesture_for_command
         command_name_out = None if queue_state == "low_confidence" else command_name
         gesture_debug_log(
             "inference.recognizer_mapped",
@@ -291,6 +311,8 @@ class GestureInferenceService:
             confidence=confidence,
             threshold=required_confidence,
             queue_state=queue_state,
+            tilt_value=recognition.tilt_value,
+            movement_direction=recognition.movement_direction,
             detector_available=self._detector_available,
             detector_status=self._detector_status,
         )
@@ -307,6 +329,10 @@ class GestureInferenceService:
             stable_hits=stable_hits,
             required_hits=required_hits,
             required_confidence=required_confidence,
+            tilt_value=recognition.tilt_value,
+            movement_direction=recognition.movement_direction,
+            wrist_x=recognition.wrist_x,
+            index_tip_x=recognition.index_tip_x,
             debug_bypass_stability=self.debug_bypass_stability,
             detector_available=self._detector_available,
             detector_status=self._detector_status,
@@ -457,11 +483,11 @@ class GestureInferenceService:
                 return None, "detecting", self.dominance_frames, self.min_confidence
             return None, "stabilizing", self.dominance_frames, self.min_confidence
 
-        behavior = get_gesture_behavior(stable_gesture)
-        if behavior is None or stable_gesture not in self._enabled_gesture_commands:
+        gesture = get_gesture_definition(stable_gesture)
+        if gesture is None or stable_gesture not in self._enabled_gesture_commands:
             return None, "detecting", self.dominance_frames, self.min_confidence
 
-        command_name = behavior.command
+        command_name = gesture.command
         if not command_name:
             return None, "stabilizing", self.dominance_frames, self.min_confidence
 
@@ -474,10 +500,10 @@ class GestureInferenceService:
             return command_name, "debug_bypass", required_hits, min_confidence
         if confidence < min_confidence:
             return None, "low_confidence", required_hits, min_confidence
-        if behavior.behavior_type == "safety":
+        if gesture.behavior_type == "safety":
             return command_name, "ready", 1, min_confidence
         if (
-            behavior.behavior_type == "repeatable"
+            gesture.behavior_type == "repeatable"
             and confidence >= self._config.gesture_fast_path_confidence(stable_gesture)
             and stable_hits >= self._fast_path_hits
         ):
@@ -493,8 +519,8 @@ class GestureInferenceService:
             return None
         if raw_gesture not in self._enabled_gesture_commands:
             return None
-        behavior = get_gesture_behavior(raw_gesture)
-        return behavior.command if behavior is not None else None
+        gesture = get_gesture_definition(raw_gesture)
+        return gesture.command if gesture is not None else None
 
     def _stabilize_gesture(self, with_count: bool = False) -> str | tuple[str | None, int] | None:
         if len(self._history) < self.dominance_frames:
@@ -561,7 +587,7 @@ class GestureInferenceService:
         self._last_timestamp_ms = timestamp_ms
         return timestamp_ms
 
-    def _await_recognition_result(self, timestamp_ms: int) -> tuple[str | None, str | None, float | None]:
+    def _await_recognition_result(self, timestamp_ms: int) -> _RecognizerSample:
         deadline = monotonic() + self._RECOGNIZER_RESULT_TIMEOUT_S
         with self._recognition_condition:
             while timestamp_ms not in self._pending_recognition:
@@ -574,7 +600,15 @@ class GestureInferenceService:
                         detector_available=self._detector_available,
                         detector_status=self._detector_status,
                     )
-                    return None, None, None
+                    return _RecognizerSample(
+                        recognizer_label=None,
+                        mapped_gesture=None,
+                        confidence=None,
+                        tilt_value=None,
+                        movement_direction=None,
+                        wrist_x=None,
+                        index_tip_x=None,
+                    )
                 self._recognition_condition.wait(timeout=remaining)
             return self._pending_recognition.pop(timestamp_ms)
 
@@ -582,6 +616,10 @@ class GestureInferenceService:
         recognizer_label: str | None = None
         gesture_name: str | None = None
         confidence: float | None = None
+        tilt_value: float | None = None
+        movement_direction: str | None = None
+        wrist_x: float | None = None
+        index_tip_x: float | None = None
         try:
             gestures = getattr(result, "gestures", None)
             if gestures and len(gestures) > 0 and gestures[0]:
@@ -590,6 +628,8 @@ class GestureInferenceService:
                 gesture_name = self._map_recognizer_label(recognizer_label)
                 score = getattr(top, "score", None)
                 confidence = float(score) if score is not None else None
+            if gesture_name == "point_up":
+                tilt_value, movement_direction, wrist_x, index_tip_x = self._extract_point_up_tilt(result)
         except Exception as exc:
             gesture_debug_log(
                 "inference.recognizer_callback_error",
@@ -607,28 +647,91 @@ class GestureInferenceService:
             mapped_gesture=gesture_name,
             raw_gesture=gesture_name,
             confidence=confidence,
+            tilt_value=tilt_value,
+            movement_direction=movement_direction,
+            wrist_x=wrist_x,
+            index_tip_x=index_tip_x,
         )
         with self._recognition_condition:
-            self._pending_recognition[timestamp_ms] = (recognizer_label, gesture_name, confidence)
+            self._pending_recognition[timestamp_ms] = _RecognizerSample(
+                recognizer_label=recognizer_label,
+                mapped_gesture=gesture_name,
+                confidence=confidence,
+                tilt_value=tilt_value,
+                movement_direction=movement_direction,
+                wrist_x=wrist_x,
+                index_tip_x=index_tip_x,
+            )
             self._recognition_condition.notify_all()
 
     def _map_recognizer_label(self, label: str | None) -> str | None:
-        if not label:
+        gesture = get_gesture_definition_by_recognizer_label(label)
+        if gesture is None:
             return None
-        normalized = str(label).strip()
-        mapping = {
-            "Closed_Fist": "fist",
-            "Open_Palm": "open_palm",
-            "Pointing_Up": "point_up",
-            "Thumb_Up": "thumbs_up",
-            "Thumb_Down": "point_down",
-            "Victory": "victory",
-            "ILoveYou": "i_love_you",
-        }
-        mapped = mapping.get(normalized)
-        if mapped not in self._SUPPORTED_GESTURES:
+        if gesture.internal_name not in SUPPORTED_GESTURES:
             return None
-        return mapped
+        return gesture.internal_name
+
+    def _extract_point_up_tilt(
+        self,
+        result: Any,
+    ) -> tuple[float | None, str | None, float | None, float | None]:
+        try:
+            hand_landmarks = getattr(result, "hand_landmarks", None)
+            if not hand_landmarks or not hand_landmarks[0]:
+                return None, None, None, None
+            landmarks = hand_landmarks[0]
+            wrist = landmarks[0]
+            index_tip = landmarks[8]
+            wrist_x = float(getattr(wrist, "x"))
+            index_tip_x = float(getattr(index_tip, "x"))
+            tilt_value = index_tip_x - wrist_x
+            if tilt_value < self._LEFT_TILT_THRESHOLD:
+                movement_direction = "left"
+            elif tilt_value > self._RIGHT_TILT_THRESHOLD:
+                movement_direction = "right"
+            else:
+                movement_direction = "forward"
+            return tilt_value, movement_direction, wrist_x, index_tip_x
+        except Exception:
+            return None, None, None, None
+
+    def _resolve_point_up_direction(
+        self,
+        *,
+        confidence: float | None,
+        stable_gesture: str,
+        recognizer_label: str | None,
+        tilt_value: float | None,
+        wrist_x: float | None,
+        index_tip_x: float | None,
+    ) -> str:
+        threshold = self._config.gesture_min_confidence(stable_gesture)
+        if confidence is None or confidence < threshold:
+            return stable_gesture
+        gesture = get_gesture_definition(stable_gesture)
+        if gesture is None or not gesture.tilt_support:
+            return stable_gesture
+        movement_gesture = stable_gesture
+        movement_direction = "forward"
+        if tilt_value is not None:
+            if tilt_value < self._LEFT_TILT_THRESHOLD:
+                movement_gesture = "point_left"
+                movement_direction = "left"
+            elif tilt_value > self._RIGHT_TILT_THRESHOLD:
+                movement_gesture = "point_right"
+                movement_direction = "right"
+        gesture_debug_log(
+            "inference.direction_resolved",
+            recognition_source="recognizer",
+            recognizer_label=recognizer_label,
+            mapped_gesture=stable_gesture,
+            tilt_value=tilt_value,
+            movement_direction=movement_direction,
+            wrist_x=wrist_x,
+            index_tip_x=index_tip_x,
+        )
+        return movement_gesture
 
     def _build_inference_result(
         self,

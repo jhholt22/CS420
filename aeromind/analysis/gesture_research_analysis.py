@@ -7,13 +7,15 @@ from typing import Any
 
 import pandas as pd
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_UI_ROOT = PROJECT_ROOT / "clients" / "python_ui"
+if str(PYTHON_UI_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_UI_ROOT))
 
-GESTURE_TO_COMMAND = {
-    "open_palm": "stop",
-    "fist": "land",
-    "thumbs_up": "takeoff",
-    "point_up": "forward",
-}
+from app.gestures.registry import GESTURE_REGISTRY
+
+
+COMMAND_BY_GESTURE = {gesture.internal_name: gesture.command for gesture in GESTURE_REGISTRY}
 
 EXPECTED_COLUMNS = [
     "run_id",
@@ -152,7 +154,7 @@ def compute_safety_metrics(dataframe: pd.DataFrame) -> dict[str, Any]:
 
     command_rows = dataframe[normalize_text_series(dataframe["command_sent"]) != "-"].copy()
     labeled_command_rows = command_rows[is_meaningful_label(command_rows["gesture_true"])].copy()
-    expected_command = normalize_text_series(labeled_command_rows["gesture_true"]).map(GESTURE_TO_COMMAND).fillna("")
+    expected_command = normalize_text_series(labeled_command_rows["gesture_true"]).map(COMMAND_BY_GESTURE).fillna("")
     actual_command = normalize_text_series(labeled_command_rows["command_sent"])
     false_command_mask = actual_command != expected_command
 

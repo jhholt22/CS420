@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.models.gesture_behavior import get_gesture_behavior
+from app.gestures.registry import get_gesture_definition
 from app.models.video_source import VideoSourceSpec
 
 API_BASE = "http://127.0.0.1:5000/api"
@@ -29,20 +29,12 @@ class GestureThresholdConfig:
     # Gesture confidence gates for inference readiness live here.
     default_min_confidence: float = 0.65
     noise_confidence_floor: float = 0.50
-    per_gesture_min_confidence: dict[str, float] = field(
-        default_factory=lambda: {
-            "open_palm": 0.75,
-            "point_down": 0.72,
-            "fist": 0.65,
-            "thumbs_up": 0.70,
-            "point_up": 0.72,
-        }
-    )
 
     def min_confidence_for_gesture(self, gesture_name: str | None) -> float:
-        if not gesture_name:
+        gesture = get_gesture_definition(gesture_name)
+        if gesture is None:
             return self.default_min_confidence
-        return float(self.per_gesture_min_confidence.get(gesture_name, self.default_min_confidence))
+        return float(gesture.confidence)
 
 
 @dataclass(slots=True)
@@ -50,23 +42,19 @@ class GestureStabilityConfig:
     # Gesture stabilization and controller-side debounce live here.
     stability_frames: int = 3
     dominance_frames: int = 2
-    one_shot_stabilization_ms: int = 250
-    movement_stabilization_ms: int = 120
-    per_gesture_stabilization_ms: dict[str, int] = field(
-        default_factory=lambda: {
-            "open_palm": 160,
-        }
-    )
-    stability_reset_debounce_ms: int = 150
+    one_shot_stabilization_ms: int = 320
+    movement_stabilization_ms: int = 160
+    stability_reset_debounce_ms: int = 220
 
     # More forgiving so one-shot gestures do not get released instantly on hand loss.
-    release_window_ms: int = 500
-    hover_stop_grace_ms: int = 500
+    release_window_ms: int = 650
+    hover_stop_grace_ms: int = 650
     hover_command_cooldown_ms: int = 1000
 
     def stabilization_ms_for_gesture(self, gesture_name: str | None, *, behavior_type: str | None) -> int:
-        if gesture_name and gesture_name in self.per_gesture_stabilization_ms:
-            return int(self.per_gesture_stabilization_ms[gesture_name])
+        gesture = get_gesture_definition(gesture_name)
+        if gesture is not None:
+            return int(gesture.stabilization)
         if behavior_type == "one_shot":
             return int(self.one_shot_stabilization_ms)
         return int(self.movement_stabilization_ms)
@@ -75,26 +63,18 @@ class GestureStabilityConfig:
 @dataclass(slots=True)
 class GestureMotionConfig:
     # Continuous movement resend/cooldown and RC command shaping live here.
-    movement_resend_interval_ms: int = 120
-    movement_cooldown_ms: int = 100
+    movement_resend_interval_ms: int = 150
+    movement_cooldown_ms: int = 140
     movement_fast_path_confidence: float = 0.85
-    per_gesture_fast_path_confidence: dict[str, float] = field(
-        default_factory=lambda: {
-            "point_up": 0.80,
-            "point_down": 0.80,
-        }
-    )
     default_rc_speed: int = 40
-    forward_rc_speed: int = 45
-    left_right_rc_speed: int = 45
-    yaw_rc_speed: int = 45
+    forward_rc_speed: int = 35
+    left_right_rc_speed: int = 35
+    yaw_rc_speed: int = 30
     per_command_rc_speed: dict[str, int] = field(default_factory=dict)
     move_distance_cm: int = 50
     rotation_degrees: int = 90
 
     def fast_path_confidence_for_gesture(self, gesture_name: str | None) -> float:
-        if gesture_name and gesture_name in self.per_gesture_fast_path_confidence:
-            return float(self.per_gesture_fast_path_confidence[gesture_name])
         return float(self.movement_fast_path_confidence)
 
     def rc_speed_for_command(self, command_name: str) -> int:
@@ -181,8 +161,8 @@ class AppConfig:
         return self.gesture_thresholds.min_confidence_for_gesture(gesture_name)
 
     def gesture_stabilization_ms(self, gesture_name: str | None) -> int:
-        behavior = get_gesture_behavior(gesture_name)
-        behavior_type = behavior.behavior_type if behavior is not None else None
+        gesture = get_gesture_definition(gesture_name)
+        behavior_type = gesture.behavior_type if gesture is not None else None
         return self.gesture_stability.stabilization_ms_for_gesture(
             gesture_name,
             behavior_type=behavior_type,

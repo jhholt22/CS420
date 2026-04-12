@@ -57,6 +57,23 @@ def apply_dark_theme(app: QApplication) -> None:
             font-size: 9px;
         }
 
+        #gestureLiveHud {
+            background-color: rgba(6, 12, 24, 172);
+            color: #dbe7f5;
+            border: 1px solid rgba(148, 163, 184, 32);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 10px;
+            font-weight: 600;
+            line-height: 1.35em;
+        }
+
+        #gestureLiveHud[compact="true"] {
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 9px;
+        }
+
         #hudTopBar {
             background: transparent;
             border: none;

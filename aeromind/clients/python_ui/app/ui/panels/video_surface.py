@@ -81,6 +81,14 @@ class VideoSurface(QWidget):
         self.stream_status_label.setProperty("compact", False)
         self.stream_status_label.raise_()
 
+        self.gesture_hud_label = QLabel("", self.overlay_container)
+        self.gesture_hud_label.setObjectName("gestureLiveHud")
+        self.gesture_hud_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.gesture_hud_label.setWordWrap(True)
+        self.gesture_hud_label.setProperty("compact", False)
+        self.gesture_hud_label.hide()
+        self.gesture_hud_label.raise_()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.video_label.setGeometry(self.rect())
@@ -92,6 +100,10 @@ class VideoSurface(QWidget):
         badge_height = 24 if self._compact_mode else 28
         badge_margin = 14 if self._compact_mode else 18
         self.stream_status_label.setGeometry(self.width() - badge_width - badge_margin, badge_margin, badge_width, badge_height)
+        hud_margin = 14 if self._compact_mode else 18
+        hud_width = min(280 if self._compact_mode else 320, max(180, self.width() // 3))
+        hud_height = 108 if self._compact_mode else 126
+        self.gesture_hud_label.setGeometry(hud_margin, hud_margin, hud_width, hud_height)
 
     def set_compact_mode(self, compact: bool) -> None:
         compact = bool(compact)
@@ -99,9 +111,13 @@ class VideoSurface(QWidget):
             return
         self._compact_mode = compact
         self.stream_status_label.setProperty("compact", compact)
+        self.gesture_hud_label.setProperty("compact", compact)
         self.stream_status_label.style().unpolish(self.stream_status_label)
         self.stream_status_label.style().polish(self.stream_status_label)
+        self.gesture_hud_label.style().unpolish(self.gesture_hud_label)
+        self.gesture_hud_label.style().polish(self.gesture_hud_label)
         self.stream_status_label.update()
+        self.gesture_hud_label.update()
         self.updateGeometry()
 
     def set_video_pixmap(self, pixmap: QPixmap) -> None:
@@ -156,3 +172,11 @@ class VideoSurface(QWidget):
         self.placeholder_label.show()
         self.placeholder_subtext.show()
         self.reticle_overlay.show()
+
+    def set_gesture_hud_text(self, text: str, *, visible: bool) -> None:
+        if visible and text.strip():
+            self.gesture_hud_label.setText(text)
+            self.gesture_hud_label.show()
+            return
+        self.gesture_hud_label.clear()
+        self.gesture_hud_label.hide()

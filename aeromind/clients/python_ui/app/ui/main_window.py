@@ -300,9 +300,10 @@ class MainWindow(QMainWindow):
             "0": "no_label",
             "1": "open_palm",
             "2": "fist",
-            "3": "thumbs_up",
-            "4": "thumbs_down",
-            "5": "point_up",
+            "3": "victory",
+            "4": "point_up",
+            "5": "point_left",
+            "6": "point_right",
         }
         self._label_shortcuts: list[QShortcut] = []
         for key, label in label_bindings.items():
@@ -521,6 +522,10 @@ class MainWindow(QMainWindow):
             f"Session: {session_state} | Participant: {participant_id} | Label: {current_label}"
         )
         self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state} | Label: {current_label}")
+        self.video_surface.set_gesture_hud_text(
+            self._build_live_gesture_hud_text(state, detector_status=detector_status),
+            visible=self.app_state.gesture_enabled,
+        )
 
         button.style().unpolish(button)
         button.style().polish(button)
@@ -559,6 +564,33 @@ class MainWindow(QMainWindow):
         if status == "detector_init_failed":
             return "INIT FAILED"
         return "UNAVAILABLE"
+
+    def _build_live_gesture_hud_text(
+        self,
+        state: dict[str, str | float | bool | None],
+        *,
+        detector_status: str,
+    ) -> str:
+        confidence = state.get("confidence")
+        confidence_text = f"{confidence:.2f}" if isinstance(confidence, float) else "--"
+        resolved_command = self._safe_debug_text(state.get("resolved_command"))
+        raw_gesture = self._safe_debug_text(state.get("raw"))
+        stable_gesture = self._safe_debug_text(state.get("stable"))
+        controller_queue_state = self._safe_queue_text(state.get("controller_queue_state") or state.get("queue_state"))
+        latched_terminal = self._safe_debug_text(state.get("latched_terminal_command"))
+        detector_text = self._format_detector_status(
+            detector_status,
+            bool(state.get("detector_available")),
+        )
+        safe_cap = "ON" if self.app_state.mode == "drone" and self.app_state.gesture_enabled else "OFF"
+        return "\n".join(
+            [
+                f"Raw {raw_gesture} | Stable {stable_gesture}",
+                f"Cmd {resolved_command} | Conf {confidence_text}",
+                f"Queue {controller_queue_state} | Detector {detector_text}",
+                f"Latch {latched_terminal} | Safe Cap {safe_cap}",
+            ]
+        )
 
     @staticmethod
     def _compact_health_text(text: str) -> str:
