@@ -18,6 +18,7 @@ class GestureDispatchDecision:
 
 class GestureController:
     """Maps stabilized gestures to command behaviors through one decision path."""
+    _STABILITY_RESET_DEBOUNCE_MS = 150
 
     def __init__(self, release_window_ms: int = 180) -> None:
         self._enabled = False
@@ -56,6 +57,9 @@ class GestureController:
         self._required_confidence = 0.0
 
         self._stable_since = 0.0
+        self._stability_gesture_name: str | None = None
+        self._pending_stability_gesture_name: str | None = None
+        self._pending_stability_since = 0.0
         self._last_stable_gesture_name: str | None = None
 
         self._last_active_gesture: str | None = None
@@ -85,10 +89,10 @@ class GestureController:
         self._required_confidence = result.required_confidence
 
         now = monotonic()
-        current_stable = result.stable_gesture
-        if current_stable != self._last_stable_gesture_name:
-            self._stable_since = now if current_stable else 0.0
-        self._last_stable_gesture_name = current_stable
+        observed_stable = result.stable_gesture
+        self._last_stable_gesture_name = observed_stable
+        self._update_stability_tracking(observed_stable, now=now)
+        self._stable_gesture = self._stability_gesture_name or "-"
 
         current_marker = self._active_marker(result)
         if self._active_repeatable_command is not None and current_marker != self._last_dispatched_gesture:
@@ -209,7 +213,7 @@ class GestureController:
         self._pending_command = None
 
     def get_stable_ms(self) -> int | None:
-        if not self._last_stable_gesture_name or self._stable_since <= 0.0:
+        if not self._stability_gesture_name or self._stable_since <= 0.0:
             return None
         return max(0, int((monotonic() - self._stable_since) * 1000.0))
 
@@ -240,10 +244,12 @@ class GestureController:
             "detector_error": self._detector_error,
             "detector_model_path": self._detector_model_path,
             "stable_ms": self.get_stable_ms(),
-            "threshold": self.get_threshold_for_gesture(self._last_stable_gesture_name),
+            "threshold": self._required_confidence or self.get_threshold_for_gesture(self._last_stable_gesture_name),
             "required_hits": self._required_hits,
             "required_confidence": self._required_confidence,
             "last_active_gesture": self._last_active_gesture,
+            "stability_gesture": self._stability_gesture_name,
+            "stability_pending_gesture": self._pending_stability_gesture_name,
             "last_dispatched_gesture": self._last_dispatched_gesture,
             "last_command_sent": self._last_command_sent,
             "last_command_timestamp": int(self._last_command_timestamp * 1000.0) if self._last_command_timestamp else None,
@@ -359,3 +365,29 @@ class GestureController:
         if raw:
             return raw
         return None
+
+    def _update_stability_tracking(self, observed_stable: str | None, *, now: float) -> None:
+        if observed_stable == self._stability_gesture_name:
+            self._pending_stability_gesture_name = None
+            self._pending_stability_since = 0.0
+            if observed_stable is not None and self._stable_since <= 0.0:
+                self._stable_since = now
+            return
+
+        if observed_stable != self._pending_stability_gesture_name:
+            self._pending_stability_gesture_name = observed_stable
+            self._pending_stability_since = now
+            return
+
+        if self._pending_stability_since <= 0.0:
+            self._pending_stability_since = now
+            return
+
+        debounce_elapsed_ms = (now - self._pending_stability_since) * 1000.0
+        if debounce_elapsed_ms < self._STABILITY_RESET_DEBOUNCE_MS:
+            return
+
+        self._stability_gesture_name = observed_stable
+        self._stable_since = self._pending_stability_since if observed_stable is not None else 0.0
+        self._pending_stability_gesture_name = None
+        self._pending_stability_since = 0.0

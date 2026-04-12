@@ -45,6 +45,7 @@ class ClientRuntimeCoordinator:
         self._selected_video_mode: str | None = None
         self._last_hover_command_ts = 0.0
         self._last_seen_gesture_ts = 0.0
+        self._last_logged_command_block_key: tuple[object, ...] | None = None
         self._inference_frame_buffer = LatestFrameBuffer(self.config.inference_max_pending_frames)
 
         self.status_thread = QThread(parent)
@@ -187,6 +188,7 @@ class ClientRuntimeCoordinator:
         self._selected_video_mode = None
         self._last_hover_command_ts = 0.0
         self._last_seen_gesture_ts = 0.0
+        self._last_logged_command_block_key = None
         self.clear_pending_gesture_frames()
         self.select_video_source(mode=None, reason="runtime_reset")
         self.video_service.close()
@@ -248,7 +250,14 @@ class ClientRuntimeCoordinator:
                 stable_gesture=result.stable_gesture,
                 confidence=result.confidence,
                 stable_ms=stable_ms,
+                stable_hits=result.stable_hits,
                 threshold=threshold,
+                resolved_command=decision.command_name,
+                dispatch_allowed=decision.dispatch_allowed,
+                inference_queue_state=result.queue_state,
+                controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
+                required_hits=required_hits,
+                required_confidence=required_confidence,
                 drone_state=self.current_drone_state(),
                 battery_pct=self.app_state.battery_pct,
                 height_cm=self.app_state.height_cm,
@@ -293,6 +302,8 @@ class ClientRuntimeCoordinator:
                 self.gesture_logger.log_command_event(
                     event_type="command_dispatch",
                     frame_id=frame_id,
+                    resolved_command=command_name,
+                    dispatch_allowed=True,
                     command_sent=command_name,
                     command_block_reason="-",
                     command_ts_ms=command_ts,
@@ -301,11 +312,17 @@ class ClientRuntimeCoordinator:
                     stable_gesture=result.stable_gesture,
                     confidence=result.confidence,
                     stable_ms=stable_ms,
+                    stable_hits=result.stable_hits,
                     threshold=threshold,
+                    inference_queue_state=result.queue_state,
+                    controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
+                    required_hits=required_hits,
+                    required_confidence=required_confidence,
                     drone_state=self.current_drone_state(),
                     battery_pct=self.app_state.battery_pct,
                     height_cm=self.app_state.height_cm,
                 )
+                self._last_logged_command_block_key = None
                 if dispatch_result is not None:
                     self._track_pending_motion(
                         frame_id=frame_id,
@@ -331,20 +348,32 @@ class ClientRuntimeCoordinator:
                     dispatch_attempted=False,
                     detector_available=result.detector_available,
                 )
-                self.gesture_logger.log_command_event(
-                    event_type="command_blocked",
-                    frame_id=frame_id,
-                    command_sent="-",
-                    command_block_reason=decision.block_reason,
-                    gesture_pred=result.raw_gesture,
-                    stable_gesture=result.stable_gesture,
-                    confidence=result.confidence,
-                    stable_ms=stable_ms,
-                    threshold=threshold,
-                    drone_state=self.current_drone_state(),
-                    battery_pct=self.app_state.battery_pct,
-                    height_cm=self.app_state.height_cm,
-                )
+                if self._should_log_command_blocked(
+                    result=result,
+                    decision=decision,
+                    debug_state=debug_state,
+                ):
+                    self.gesture_logger.log_command_event(
+                        event_type="command_blocked",
+                        frame_id=frame_id,
+                        resolved_command=command_name,
+                        dispatch_allowed=False,
+                        command_sent="-",
+                        command_block_reason=decision.block_reason,
+                        gesture_pred=result.raw_gesture,
+                        stable_gesture=result.stable_gesture,
+                        confidence=result.confidence,
+                        stable_ms=stable_ms,
+                        stable_hits=result.stable_hits,
+                        threshold=threshold,
+                        inference_queue_state=result.queue_state,
+                        controller_queue_state=self._as_text(debug_state.get("controller_queue_state")),
+                        required_hits=required_hits,
+                        required_confidence=required_confidence,
+                        drone_state=self.current_drone_state(),
+                        battery_pct=self.app_state.battery_pct,
+                        height_cm=self.app_state.height_cm,
+                    )
                 self._maybe_auto_hover(
                     result=result,
                     decision=decision,
@@ -468,6 +497,26 @@ class ClientRuntimeCoordinator:
             mode="passive_hover",
         )
 
+    def _should_log_command_blocked(
+        self,
+        *,
+        result: Any,
+        decision: Any,
+        debug_state: dict[str, str | float | bool | None],
+    ) -> bool:
+        key = (
+            decision.command_name or "-",
+            result.raw_gesture or "-",
+            result.stable_gesture or "-",
+            result.queue_state or "-",
+            self._as_text(debug_state.get("controller_queue_state")) or "-",
+            decision.block_reason or "-",
+        )
+        should_log = key != self._last_logged_command_block_key
+        if should_log:
+            self._last_logged_command_block_key = key
+        return should_log
+
     def _call_api(
         self,
         action: Callable[[], Any],
@@ -590,6 +639,13 @@ class ClientRuntimeCoordinator:
         if isinstance(value, (int, float)):
             return float(value)
         return None
+
+    @staticmethod
+    def _as_text(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     def _video_source_for_mode(self, mode: str | None) -> VideoSourceSpec | None:
         normalized_mode = self._normalize_mode(mode)

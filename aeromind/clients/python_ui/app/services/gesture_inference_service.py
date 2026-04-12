@@ -64,7 +64,7 @@ class GestureInferenceResult:
 
 class GestureInferenceService:
     _NOISE_MARKER = "__noise__"
-    _DEFAULT_MIN_CONFIDENCE = 0.72
+    _DEFAULT_MIN_CONFIDENCE = 0.60
     _GESTURE_COMMAND_MAP = {
         gesture_name: behavior.command for gesture_name, behavior in GESTURE_BEHAVIOR_CONFIG.items()
     }
@@ -72,10 +72,10 @@ class GestureInferenceService:
 
     def __init__(
         self,
-        stability_frames: int = 5,
-        dominance_frames: int = 3,
-        min_confidence: float = 0.68,
-        noise_confidence_floor: float = 0.58,
+        stability_frames: int = 3,
+        dominance_frames: int = 2,
+        min_confidence: float = 0.60,
+        noise_confidence_floor: float = 0.50,
         max_num_hands: int = 1,
         debug_bypass_stability: bool = False,
         debug_bypass_min_confidence: float = 0.55,
@@ -91,8 +91,8 @@ class GestureInferenceService:
         self._gesture_command_map = dict(self._GESTURE_COMMAND_MAP)
         self._enabled_gesture_commands = set(self._gesture_command_map.keys())
         self._gesture_safety_rules = {
-            "open_palm": {"min_confidence": 0.84, "required_hits": self.dominance_frames},
-            "point_down": {"min_confidence": 0.82, "required_hits": self.dominance_frames},
+            "open_palm": {"min_confidence": 0.78, "required_hits": self.dominance_frames},
+            "point_down": {"min_confidence": 0.76, "required_hits": self.dominance_frames},
             "fist": {"min_confidence": 0.72, "required_hits": 2},
             "thumbs_up": {"min_confidence": 0.72, "required_hits": 2},
             "point_up": {"min_confidence": 0.76, "required_hits": self.dominance_frames},
@@ -651,8 +651,8 @@ class GestureInferenceService:
             return cls._DEFAULT_MIN_CONFIDENCE
 
         safety_rule = {
-            "open_palm": {"min_confidence": 0.84},
-            "point_down": {"min_confidence": 0.82},
+            "open_palm": {"min_confidence": 0.78},
+            "point_down": {"min_confidence": 0.76},
             "fist": {"min_confidence": 0.72},
             "thumbs_up": {"min_confidence": 0.72},
             "point_up": {"min_confidence": 0.76},

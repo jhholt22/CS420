@@ -35,9 +35,16 @@ class GestureLogger:
         "stable_gesture",
         "confidence",
         "stable_ms",
+        "stable_hits",
         "threshold",
+        "resolved_command",
+        "dispatch_allowed",
         "command_sent",
         "command_block_reason",
+        "inference_queue_state",
+        "controller_queue_state",
+        "required_hits",
+        "required_confidence",
         "drone_state",
         "battery_pct",
         "height_cm",
@@ -106,6 +113,12 @@ class GestureLogger:
         if value is None:
             return ""
         return str(int(value))
+
+    @staticmethod
+    def _normalize_bool(value: bool | None) -> str:
+        if value is None:
+            return ""
+        return "true" if bool(value) else "false"
 
     @staticmethod
     def _normalize_frame_id(value: object) -> str:
@@ -189,9 +202,16 @@ class GestureLogger:
             stable_gesture="-",
             confidence=None,
             stable_ms=None,
+            stable_hits=None,
             threshold=None,
+            resolved_command=None,
+            dispatch_allowed=None,
             command_sent="-",
             command_block_reason="-",
+            inference_queue_state=None,
+            controller_queue_state=None,
+            required_hits=None,
+            required_confidence=None,
             drone_state="-",
             battery_pct=None,
             height_cm=None,
@@ -211,9 +231,16 @@ class GestureLogger:
             stable_gesture="-",
             confidence=None,
             stable_ms=None,
+            stable_hits=None,
             threshold=None,
+            resolved_command=None,
+            dispatch_allowed=None,
             command_sent="-",
             command_block_reason="-",
+            inference_queue_state=None,
+            controller_queue_state=None,
+            required_hits=None,
+            required_confidence=None,
             drone_state="-",
             battery_pct=None,
             height_cm=None,
@@ -233,7 +260,14 @@ class GestureLogger:
         stable_gesture: str | None = None,
         confidence: float | None = None,
         stable_ms: int | None = None,
+        stable_hits: int | None = None,
         threshold: float | None = None,
+        resolved_command: str | None = None,
+        dispatch_allowed: bool | None = None,
+        inference_queue_state: str | None = None,
+        controller_queue_state: str | None = None,
+        required_hits: int | None = None,
+        required_confidence: float | None = None,
         drone_state: str | None = None,
         battery_pct: int | None = None,
         height_cm: int | None = None,
@@ -249,9 +283,16 @@ class GestureLogger:
             stable_gesture=stable_gesture,
             confidence=confidence,
             stable_ms=stable_ms,
+            stable_hits=stable_hits,
             threshold=threshold,
+            resolved_command=resolved_command,
+            dispatch_allowed=dispatch_allowed,
             command_sent="-",
             command_block_reason="-",
+            inference_queue_state=inference_queue_state,
+            controller_queue_state=controller_queue_state,
+            required_hits=required_hits,
+            required_confidence=required_confidence,
             drone_state=drone_state,
             battery_pct=battery_pct,
             height_cm=height_cm,
@@ -271,9 +312,16 @@ class GestureLogger:
         stable_gesture: str | None = None,
         confidence: float | None = None,
         stable_ms: int | None = None,
+        stable_hits: int | None = None,
         threshold: float | None = None,
+        resolved_command: str | None = None,
+        dispatch_allowed: bool | None = None,
         command_sent: str | None = None,
         command_block_reason: str | None = None,
+        inference_queue_state: str | None = None,
+        controller_queue_state: str | None = None,
+        required_hits: int | None = None,
+        required_confidence: float | None = None,
         drone_state: str | None = None,
         battery_pct: int | None = None,
         height_cm: int | None = None,
@@ -291,9 +339,16 @@ class GestureLogger:
             stable_gesture=stable_gesture,
             confidence=confidence,
             stable_ms=stable_ms,
+            stable_hits=stable_hits,
             threshold=threshold,
+            resolved_command=resolved_command,
+            dispatch_allowed=dispatch_allowed,
             command_sent=command_sent,
             command_block_reason=command_block_reason,
+            inference_queue_state=inference_queue_state,
+            controller_queue_state=controller_queue_state,
+            required_hits=required_hits,
+            required_confidence=required_confidence,
             drone_state=drone_state,
             battery_pct=battery_pct,
             height_cm=height_cm,
@@ -328,9 +383,16 @@ class GestureLogger:
             stable_gesture="-",
             confidence=None,
             stable_ms=None,
+            stable_hits=None,
             threshold=None,
+            resolved_command=None,
+            dispatch_allowed=None,
             command_sent=command_sent,
             command_block_reason="-",
+            inference_queue_state=None,
+            controller_queue_state=None,
+            required_hits=None,
+            required_confidence=None,
             drone_state=drone_state,
             battery_pct=battery_pct,
             height_cm=height_cm,
@@ -351,9 +413,16 @@ class GestureLogger:
         stable_gesture: str | None,
         confidence: float | None,
         stable_ms: int | None,
+        stable_hits: int | None,
         threshold: float | None,
+        resolved_command: str | None,
+        dispatch_allowed: bool | None,
         command_sent: str | None,
         command_block_reason: str | None,
+        inference_queue_state: str | None,
+        controller_queue_state: str | None,
+        required_hits: int | None,
+        required_confidence: float | None,
         drone_state: str | None,
         battery_pct: int | None,
         height_cm: int | None,
@@ -377,9 +446,16 @@ class GestureLogger:
             "stable_gesture": self._normalize_text(stable_gesture),
             "confidence": self._normalize_float(confidence),
             "stable_ms": self._normalize_int(stable_ms),
+            "stable_hits": self._normalize_int(stable_hits),
             "threshold": self._normalize_float(threshold),
+            "resolved_command": self._normalize_text(resolved_command),
+            "dispatch_allowed": self._normalize_bool(dispatch_allowed),
             "command_sent": self._normalize_text(command_sent),
             "command_block_reason": self._normalize_text(command_block_reason),
+            "inference_queue_state": self._normalize_text(inference_queue_state),
+            "controller_queue_state": self._normalize_text(controller_queue_state),
+            "required_hits": self._normalize_int(required_hits),
+            "required_confidence": self._normalize_float(required_confidence),
             "drone_state": self._normalize_text(drone_state),
             "battery_pct": self._normalize_int(battery_pct),
             "height_cm": self._normalize_int(height_cm),
@@ -396,6 +472,11 @@ class GestureLogger:
 
     def _open_target(self, name: str, path: Path) -> _CsvTarget:
         path.parent.mkdir(parents=True, exist_ok=True)
+        rotated_from: Path | None = None
+        existing_header = self._read_existing_header(path)
+        if existing_header and existing_header != self._FIELDS:
+            rotated_from = path.with_name(f"{path.stem}.legacy_{self.run_id}{path.suffix}")
+            path.replace(rotated_from)
         file_exists = path.exists()
         file = path.open("a", newline="", encoding="utf-8")
         writer = csv.DictWriter(file, fieldnames=self._FIELDS)
@@ -409,8 +490,19 @@ class GestureLogger:
             target=name,
             path=path,
             header_written=header_written,
+            rotated_from=rotated_from,
         )
         return _CsvTarget(name=name, path=path, file=file, writer=writer)
+
+    @staticmethod
+    def _read_existing_header(path: Path) -> list[str] | None:
+        if not path.exists() or path.stat().st_size == 0:
+            return None
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            try:
+                return next(csv.reader(handle), None)
+            except Exception:
+                return None
 
     def _append_row(self, row: dict[str, str]) -> None:
         for target in self._targets:
