@@ -8,14 +8,19 @@ from app.models.video_source import VideoSourceSpec
 API_BASE = "http://127.0.0.1:5000/api"
 STATUS_REFRESH_MS = 1000
 VIDEO_URL = "http://127.0.0.1:8080/video"
+
+# Keep sim and gesture sources separated by default.
+# If you intentionally want both to use the same webcam, set both to 0 explicitly.
 SIM_WEBCAM_INDEX = 0
-GESTURE_WEBCAM_INDEX = 0
+GESTURE_WEBCAM_INDEX = 1
+
 VIDEO_RECONNECT_DELAY_MS = 1000
-VIDEO_READ_INTERVAL_MS = 30
+VIDEO_READ_INTERVAL_MS = 40
 VIDEO_MAX_WIDTH: int | None = None
 VIDEO_MAX_HEIGHT: int | None = None
 VIDEO_DROP_FRAMES_ON_RECONNECT = 3
 VIDEO_BACKEND_PREFER_FFMPEG = True
+
 GESTURE_LOG_FLUSH_ROWS = 50
 PERFORMANCE_LOG_INTERVAL_MS = 5000
 
@@ -23,15 +28,15 @@ PERFORMANCE_LOG_INTERVAL_MS = 5000
 @dataclass(slots=True)
 class GestureThresholdConfig:
     # Gesture confidence gates for inference readiness live here.
-    default_min_confidence: float = 0.60
+    default_min_confidence: float = 0.65
     noise_confidence_floor: float = 0.50
     per_gesture_min_confidence: dict[str, float] = field(
         default_factory=lambda: {
-            "open_palm": 0.82,
-            "point_down": 0.76,
-            "fist": 0.60,
-            "thumbs_up": 0.72,
-            "point_up": 0.76,
+            "open_palm": 0.75,
+            "point_down": 0.72,
+            "fist": 0.65,
+            "thumbs_up": 0.70,
+            "point_up": 0.72,
         }
     )
 
@@ -46,18 +51,17 @@ class GestureStabilityConfig:
     # Gesture stabilization and controller-side debounce live here.
     stability_frames: int = 3
     dominance_frames: int = 2
-    one_shot_stabilization_ms: int = 260
+    one_shot_stabilization_ms: int = 250
     movement_stabilization_ms: int = 120
     per_gesture_stabilization_ms: dict[str, int] = field(
         default_factory=lambda: {
-            "fist": 180,
-            "open_palm": 140,
+            "open_palm": 160,
         }
     )
     stability_reset_debounce_ms: int = 150
-    release_window_ms: int = 180
-    hover_stop_grace_ms: int = 350
-    hover_command_cooldown_ms: int = 900
+    release_window_ms: int = 220
+    hover_stop_grace_ms: int = 400
+    hover_command_cooldown_ms: int = 1000
 
     def stabilization_ms_for_gesture(self, gesture_name: str | None, *, behavior_type: str | None) -> int:
         if gesture_name and gesture_name in self.per_gesture_stabilization_ms:
@@ -70,14 +74,19 @@ class GestureStabilityConfig:
 @dataclass(slots=True)
 class GestureMotionConfig:
     # Continuous movement resend/cooldown and RC command shaping live here.
-    movement_resend_interval_ms: int = 70
-    movement_cooldown_ms: int = 60
-    movement_fast_path_confidence: float = 0.90
-    per_gesture_fast_path_confidence: dict[str, float] = field(default_factory=dict)
-    default_rc_speed: int = 45
-    forward_rc_speed: int = 50
+    movement_resend_interval_ms: int = 120
+    movement_cooldown_ms: int = 100
+    movement_fast_path_confidence: float = 0.85
+    per_gesture_fast_path_confidence: dict[str, float] = field(
+        default_factory=lambda: {
+            "point_up": 0.80,
+            "point_down": 0.80,
+        }
+    )
+    default_rc_speed: int = 40
+    forward_rc_speed: int = 45
     left_right_rc_speed: int = 45
-    yaw_rc_speed: int = 35
+    yaw_rc_speed: int = 45
     per_command_rc_speed: dict[str, int] = field(default_factory=dict)
     move_distance_cm: int = 50
     rotation_degrees: int = 90
@@ -103,7 +112,7 @@ class GestureMotionConfig:
 class GestureTerminalConfig:
     # Terminal one-shot latching and duplicate suppression live here.
     terminal_command_latch_enabled: bool = True
-    terminal_command_cooldown_ms: int = 2200
+    terminal_command_cooldown_ms: int = 3000
     terminal_command_release_required: bool = True
 
 
@@ -117,7 +126,7 @@ class GestureEnvironmentConfig:
 @dataclass(slots=True)
 class GestureInferenceConfig:
     # Camera/inference throughput and detector bypass knobs live here.
-    max_fps: int = 20
+    max_fps: int = 25
     input_width: int = 320
     input_height: int = 240
     process_every_nth_frame: int = 1
