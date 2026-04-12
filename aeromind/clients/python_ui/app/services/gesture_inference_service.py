@@ -4,6 +4,8 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+from threading import Condition
+from time import monotonic
 from typing import Any, Deque, Literal
 
 import cv2
@@ -65,6 +67,20 @@ class GestureInferenceResult:
 
 class GestureInferenceService:
     _NOISE_MARKER = "__noise__"
+    _RECOGNIZER_RESULT_TIMEOUT_S = 0.25
+    _SUPPORTED_GESTURES = frozenset(
+        {
+            "open_palm",
+            "fist",
+            "thumbs_up",
+            "point_up",
+            "point_down",
+            "point_left",
+            "point_right",
+            "l_shape_right",
+            "l_shape_left",
+        }
+    )
     _GESTURE_COMMAND_MAP = {
         gesture_name: behavior.command for gesture_name, behavior in GESTURE_BEHAVIOR_CONFIG.items()
     }
@@ -98,12 +114,16 @@ class GestureInferenceService:
         self._max_reliable_distance_m = float(self._config.gesture_environment.max_reliable_distance_m)
         self._distance_compensation_enabled = bool(self._config.gesture_environment.distance_compensation_enabled)
         self._detector: Any | None = None
+        self._recognizer: Any | None = None
         self._detector_available = False
         self._detector_status: DetectorStatus = "detector_unavailable"
         self._detector_error: str | None = None
         self._model_path = self._resolve_model_path()
         self._init_attempted = False
         self._detector_unavailable_logged = False
+        self._recognition_condition = Condition()
+        self._pending_recognition: dict[int, tuple[str | None, float | None]] = {}
+        self._last_timestamp_ms = 0
 
         if not self.__class__._INIT_LOGGED:
             gesture_debug_log(
@@ -170,12 +190,20 @@ class GestureInferenceService:
 
         try:
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-            results = self._detector.detect(mp_image)
+            timestamp_ms = self._next_timestamp_ms()
+            with self._recognition_condition:
+                self._pending_recognition.pop(timestamp_ms, None)
+            self._recognizer.recognize_async(mp_image, timestamp_ms)
+            recognizer_label, raw_gesture, confidence = self._await_recognition_result(timestamp_ms)
             gesture_debug_log(
                 "inference.process_ok",
                 frame_shape=frame_shape,
                 frame_dtype=frame_dtype,
                 process_ok=True,
+                recognition_source="recognizer",
+                recognizer_label=recognizer_label,
+                raw_gesture=raw_gesture,
+                confidence=confidence,
             )
         except Exception as exc:
             gesture_debug_log(
@@ -190,27 +218,23 @@ class GestureInferenceService:
             )
             return self._empty_result("detector_error")
 
-        hand_landmarks, handedness = self._extract_hand_landmarks(results)
-        gesture_debug_log(
-            "inference.landmarks_checked",
-            landmarks_found=hand_landmarks is not None,
-            handedness=handedness,
-            detector_available=self._detector_available,
-            detector_status=self._detector_status,
-        )
-        if hand_landmarks is None:
+        if raw_gesture is None:
             self._history.append(None)
             gesture_debug_log(
-                "inference.no_hand",
+                "inference.recognizer_filtered",
+                recognition_source="recognizer",
+                recognizer_label=recognizer_label,
+                mapped_gesture="-",
                 raw_gesture="-",
                 stable_gesture="-",
-                confidence="-",
+                confidence=confidence,
+                threshold="-",
                 resolved_command="-",
                 queue_state="detecting",
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
             )
-            return GestureInferenceResult(
+            return self._build_inference_result(
                 raw_gesture=None,
                 stable_gesture=None,
                 confidence=None,
@@ -219,67 +243,34 @@ class GestureInferenceService:
                 stable_hits=0,
                 required_hits=self.dominance_frames,
                 required_confidence=self.min_confidence,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-                detector_error=self._detector_error,
-                detector_model_path=self._model_path,
-            )
-
-        raw_gesture, confidence = self._classify_landmarks(hand_landmarks, handedness)
-        if raw_gesture is None:
-            self._history.append(None)
-            stable_gesture = self._stabilize_gesture()
-            gesture_debug_log(
-                "inference.unclassified",
-                raw_gesture="-",
-                stable_gesture=stable_gesture,
-                confidence=confidence,
-                resolved_command="-",
-                queue_state="detecting",
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-            )
-            return GestureInferenceResult(
-                raw_gesture=None,
-                stable_gesture=stable_gesture,
-                confidence=confidence,
-                command_name=None,
-                queue_state="detecting",
-                stable_hits=0,
-                required_hits=self.dominance_frames,
-                required_confidence=self.min_confidence,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-                detector_error=self._detector_error,
-                detector_model_path=self._model_path,
             )
 
         if confidence is None or confidence < self.noise_confidence_floor:
             self._history.append(self._NOISE_MARKER)
-            stable_gesture = self._stabilize_gesture()
+            threshold = self._config.gesture_min_confidence(raw_gesture)
             gesture_debug_log(
                 "inference.low_confidence",
+                recognition_source="recognizer",
+                recognizer_label=recognizer_label,
+                mapped_gesture=raw_gesture,
                 raw_gesture=raw_gesture,
-                stable_gesture=stable_gesture,
+                stable_gesture="-",
                 confidence=confidence,
+                threshold=threshold,
                 resolved_command="-",
                 queue_state="low_confidence",
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
             )
-            return GestureInferenceResult(
+            return self._build_inference_result(
                 raw_gesture=raw_gesture,
-                stable_gesture=stable_gesture,
+                stable_gesture=None,
                 confidence=confidence,
                 command_name=None,
                 queue_state="low_confidence",
                 stable_hits=0,
                 required_hits=self.dominance_frames,
                 required_confidence=self.min_confidence,
-                detector_available=self._detector_available,
-                detector_status=self._detector_status,
-                detector_error=self._detector_error,
-                detector_model_path=self._model_path,
             )
 
         self._history.append(raw_gesture)
@@ -290,12 +281,28 @@ class GestureInferenceService:
             stable_hits,
             confidence,
         )
+        stable_gesture_out = None if queue_state == "low_confidence" else stable_gesture
+        command_name_out = None if queue_state == "low_confidence" else command_name
+        gesture_debug_log(
+            "inference.recognizer_mapped",
+            recognition_source="recognizer",
+            recognizer_label=recognizer_label,
+            mapped_gesture=raw_gesture,
+            confidence=confidence,
+            threshold=required_confidence,
+            queue_state=queue_state,
+            detector_available=self._detector_available,
+            detector_status=self._detector_status,
+        )
         gesture_debug_log(
             "inference.resolved",
+            recognition_source="recognizer",
+            recognizer_label=recognizer_label,
+            mapped_gesture=raw_gesture,
             raw_gesture=raw_gesture,
-            stable_gesture=stable_gesture,
+            stable_gesture=stable_gesture_out,
             confidence=confidence,
-            resolved_command=command_name,
+            resolved_command=command_name_out,
             queue_state=queue_state,
             stable_hits=stable_hits,
             required_hits=required_hits,
@@ -305,19 +312,15 @@ class GestureInferenceService:
             detector_status=self._detector_status,
         )
 
-        return GestureInferenceResult(
+        return self._build_inference_result(
             raw_gesture=raw_gesture,
-            stable_gesture=stable_gesture,
+            stable_gesture=stable_gesture_out,
             confidence=confidence,
-            command_name=command_name,
+            command_name=command_name_out,
             queue_state=queue_state,
             stable_hits=stable_hits,
             required_hits=required_hits,
             required_confidence=required_confidence,
-            detector_available=self._detector_available,
-            detector_status=self._detector_status,
-            detector_error=self._detector_error,
-            detector_model_path=self._model_path,
         )
 
     def reset(self) -> None:
@@ -371,12 +374,8 @@ class GestureInferenceService:
             return
 
         try:
-            from mediapipe.tasks.python.core.base_options import BaseOptions
-            from mediapipe.tasks.python.vision import (
-                HandLandmarker,
-                HandLandmarkerOptions,
-                RunningMode,
-            )
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
         except Exception as exc:
             self._set_detector_failure(
                 status="detector_missing_dependency",
@@ -403,15 +402,14 @@ class GestureInferenceService:
             return
 
         try:
-            options = HandLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path=str(model_path)),
-                running_mode=RunningMode.IMAGE,
+            options = vision.GestureRecognizerOptions(
+                base_options=python.BaseOptions(model_asset_path=str(model_path)),
+                running_mode=vision.RunningMode.LIVE_STREAM,
                 num_hands=self.max_num_hands,
-                min_hand_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-                min_hand_presence_confidence=0.5,
+                result_callback=self._on_recognition_result,
             )
-            self._detector = HandLandmarker.create_from_options(options)
+            self._recognizer = vision.GestureRecognizer.create_from_options(options)
+            self._detector = self._recognizer
             self._detector_available = True
             self._detector_status = "detector_ready"
             self._detector_error = None
@@ -419,19 +417,20 @@ class GestureInferenceService:
                 "inference.detector_init_success",
                 detector_available=self._detector_available,
                 detector_status=self._detector_status,
+                recognition_source="recognizer",
                 dependencies_available=True,
                 model_path=self._model_path,
-                detector_type=type(self._detector).__name__,
+                detector_type="GestureRecognizer",
             )
         except Exception as exc:
             self._set_detector_failure(
                 status="detector_init_failed",
-                error=_format_exception(exc) or "HandLandmarker creation failed",
+                error=_format_exception(exc) or "GestureRecognizer creation failed",
                 dependencies_available=True,
             )
 
     def _empty_result(self, queue_state: str) -> GestureInferenceResult:
-        return GestureInferenceResult(
+        return self._build_inference_result(
             raw_gesture=None,
             stable_gesture=None,
             confidence=None,
@@ -440,156 +439,7 @@ class GestureInferenceService:
             stable_hits=0,
             required_hits=self.dominance_frames,
             required_confidence=self.min_confidence,
-            detector_available=self._detector_available,
-            detector_status=self._detector_status,
-            detector_error=self._detector_error,
-            detector_model_path=self._model_path,
         )
-
-    def _extract_hand_landmarks(self, results: Any) -> tuple[Any | None, str | None]:
-        if results is None:
-            return None, None
-
-        hand_landmarks = getattr(results, "hand_landmarks", None)
-        if not hand_landmarks:
-            return None, None
-
-        handedness_label: str | None = None
-        handedness_groups = getattr(results, "handedness", None)
-        if handedness_groups:
-            try:
-                first_group = handedness_groups[0]
-                if first_group:
-                    first_category = first_group[0]
-                    handedness_label = (
-                        getattr(first_category, "category_name", None)
-                        or getattr(first_category, "display_name", None)
-                    )
-            except Exception:
-                handedness_label = None
-
-        return hand_landmarks[0], handedness_label
-
-    def _classify_landmarks(self, landmarks: Any, handedness: str | None) -> tuple[str | None, float | None]:
-        points = self._landmark_points(landmarks)
-        finger_states = self._finger_states(points, handedness)
-        thumb_vertical = self._thumb_vertical_direction(points)
-        thumb_horizontal = self._thumb_horizontal_direction(points)
-        index_direction = self._index_direction(points)
-
-        extended_count = sum(bool(value) for value in finger_states.values())
-        other_folded = (
-            not finger_states["index"]
-            and not finger_states["middle"]
-            and not finger_states["ring"]
-            and not finger_states["pinky"]
-        )
-        index_above_middle = points[8].y < points[12].y - 0.03
-
-        if all(finger_states[name] for name in ("index", "middle", "ring", "pinky")):
-            thumb_centered = abs(points[4].x - points[9].x) < 0.22
-            if finger_states["thumb"] or thumb_centered:
-                return "open_palm", 0.95
-
-        if extended_count == 0:
-            return "fist", 0.94
-
-        if (
-            finger_states["thumb"]
-            and finger_states["index"]
-            and not finger_states["middle"]
-            and not finger_states["ring"]
-            and not finger_states["pinky"]
-        ):
-            if thumb_horizontal == "right":
-                return "l_shape_right", 0.89
-            if thumb_horizontal == "left":
-                return "l_shape_left", 0.89
-
-        if (
-            finger_states["index"]
-            and not finger_states["middle"]
-            and not finger_states["ring"]
-            and not finger_states["pinky"]
-            and not finger_states["thumb"]
-        ):
-            if index_direction == "up" and index_above_middle:
-                return "point_up", 0.86
-            if index_direction == "down":
-                return "point_down", 0.87
-            if index_direction == "left":
-                return "point_left", 0.86
-            if index_direction == "right":
-                return "point_right", 0.86
-
-        if finger_states["thumb"] and other_folded:
-            if thumb_vertical == "up":
-                return "thumbs_up", 0.88
-
-        if extended_count >= 4:
-            return "open_palm", 0.68
-
-        if extended_count <= 1:
-            return "fist", 0.66
-
-        return None, None
-
-    def _finger_states(self, points: Any, handedness: str | None) -> dict[str, bool]:
-        thumb = self._is_thumb_extended(points, handedness)
-        return {
-            "thumb": thumb,
-            "index": points[8].y < points[6].y,
-            "middle": points[12].y < points[10].y,
-            "ring": points[16].y < points[14].y,
-            "pinky": points[20].y < points[18].y,
-        }
-
-    def _is_thumb_extended(self, points: Any, handedness: str | None) -> bool:
-        tip_x = points[4].x
-        ip_x = points[3].x
-        mcp_x = points[2].x
-
-        if handedness == "Left":
-            horizontal_extended = tip_x > ip_x > mcp_x
-        elif handedness == "Right":
-            horizontal_extended = tip_x < ip_x < mcp_x
-        else:
-            horizontal_extended = abs(tip_x - mcp_x) > 0.08
-
-        vertical_extended = abs(points[4].y - points[2].y) > 0.12
-        return horizontal_extended or vertical_extended
-
-    def _thumb_vertical_direction(self, points: Any) -> str | None:
-        thumb_tip_y = points[4].y
-        thumb_ip_y = points[3].y
-        thumb_mcp_y = points[2].y
-        wrist_y = points[0].y
-
-        if thumb_tip_y < thumb_ip_y < thumb_mcp_y and thumb_tip_y < wrist_y:
-            return "up"
-        if thumb_tip_y > thumb_ip_y > thumb_mcp_y and thumb_tip_y > wrist_y:
-            return "down"
-        return None
-
-    def _thumb_horizontal_direction(self, points: Any) -> str | None:
-        delta_x = points[4].x - points[2].x
-        if delta_x >= 0.08:
-            return "right"
-        if delta_x <= -0.08:
-            return "left"
-        return None
-
-    def _index_direction(self, points: Any) -> str | None:
-        delta_x = points[8].x - points[5].x
-        delta_y = points[8].y - points[5].y
-        if abs(delta_x) > abs(delta_y) * 1.15:
-            return "right" if delta_x > 0 else "left"
-        if abs(delta_y) > abs(delta_x) * 1.15:
-            if delta_y < -0.05:
-                return "up"
-            if delta_y > 0.05:
-                return "down"
-        return None
 
     def _resolve_command(
         self,
@@ -702,8 +552,109 @@ class GestureInferenceService:
 
     def _resolve_model_path(self) -> str:
         project_root = Path(__file__).resolve().parents[4]
-        return str(project_root / "models" / "hand_landmarker.task")
+        return str(project_root / "models" / "gesture_recognizer.task")
 
-    @staticmethod
-    def _landmark_points(landmarks: Any) -> Any:
-        return getattr(landmarks, "landmark", landmarks)
+    def _next_timestamp_ms(self) -> int:
+        timestamp_ms = int(monotonic() * 1000.0)
+        if timestamp_ms <= self._last_timestamp_ms:
+            timestamp_ms = self._last_timestamp_ms + 1
+        self._last_timestamp_ms = timestamp_ms
+        return timestamp_ms
+
+    def _await_recognition_result(self, timestamp_ms: int) -> tuple[str | None, str | None, float | None]:
+        deadline = monotonic() + self._RECOGNIZER_RESULT_TIMEOUT_S
+        with self._recognition_condition:
+            while timestamp_ms not in self._pending_recognition:
+                remaining = deadline - monotonic()
+                if remaining <= 0.0:
+                    gesture_debug_log(
+                        "inference.recognizer_timeout",
+                        timestamp_ms=timestamp_ms,
+                        timeout_s=self._RECOGNIZER_RESULT_TIMEOUT_S,
+                        detector_available=self._detector_available,
+                        detector_status=self._detector_status,
+                    )
+                    return None, None, None
+                self._recognition_condition.wait(timeout=remaining)
+            return self._pending_recognition.pop(timestamp_ms)
+
+    def _on_recognition_result(self, result: Any, output_image: Any, timestamp_ms: int) -> None:
+        recognizer_label: str | None = None
+        gesture_name: str | None = None
+        confidence: float | None = None
+        try:
+            gestures = getattr(result, "gestures", None)
+            if gestures and len(gestures) > 0 and gestures[0]:
+                top = gestures[0][0]
+                recognizer_label = getattr(top, "category_name", None)
+                gesture_name = self._map_recognizer_label(recognizer_label)
+                score = getattr(top, "score", None)
+                confidence = float(score) if score is not None else None
+        except Exception as exc:
+            gesture_debug_log(
+                "inference.recognizer_callback_error",
+                timestamp_ms=timestamp_ms,
+                error=_format_exception(exc),
+            )
+            gesture_name = None
+            confidence = None
+
+        gesture_debug_log(
+            "inference.recognizer_result",
+            timestamp_ms=timestamp_ms,
+            recognition_source="recognizer",
+            recognizer_label=recognizer_label,
+            mapped_gesture=gesture_name,
+            raw_gesture=gesture_name,
+            confidence=confidence,
+        )
+        with self._recognition_condition:
+            self._pending_recognition[timestamp_ms] = (recognizer_label, gesture_name, confidence)
+            self._recognition_condition.notify_all()
+
+    def _map_recognizer_label(self, label: str | None) -> str | None:
+        if not label:
+            return None
+        normalized = str(label).strip()
+        mapping = {
+            "Closed_Fist": "fist",
+            "Open_Palm": "open_palm",
+            "Pointing_Up": "point_up",
+            "Thumb_Up": "thumbs_up",
+            "Thumb_Down": "point_down",
+            "Victory": "victory",
+            "ILoveYou": "i_love_you",
+        }
+        mapped = mapping.get(normalized)
+        if mapped not in self._SUPPORTED_GESTURES:
+            return None
+        return mapped
+
+    def _build_inference_result(
+        self,
+        *,
+        raw_gesture: str | None,
+        stable_gesture: str | None,
+        confidence: float | None,
+        command_name: str | None,
+        queue_state: str,
+        stable_hits: int,
+        required_hits: int,
+        required_confidence: float,
+    ) -> GestureInferenceResult:
+        # Gesture labels now come exclusively from MediaPipe GestureRecognizer.
+        # Legacy landmark-rule classification is intentionally disabled.
+        return GestureInferenceResult(
+            raw_gesture=raw_gesture,
+            stable_gesture=stable_gesture,
+            confidence=confidence,
+            command_name=command_name,
+            queue_state=queue_state,
+            stable_hits=stable_hits,
+            required_hits=required_hits,
+            required_confidence=required_confidence,
+            detector_available=self._detector_available,
+            detector_status=self._detector_status,
+            detector_error=self._detector_error,
+            detector_model_path=self._model_path,
+        )

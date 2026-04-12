@@ -131,10 +131,64 @@ class GestureController:
         behavior_type = behavior.behavior_type if behavior is not None else None
         now = monotonic()
         stable_ms = self.get_stable_ms()
+        self._expire_terminal_latch_if_needed(now)
 
         action = "blocked"
         reason = self.normalize_block_reason(command_name)
         dispatch_allowed = False
+
+        if self._terminal_lock_active(now):
+            elapsed_ms = int((now - self._latched_terminal_since) * 1000.0)
+            gesture_debug_log(
+                "controller.terminal_lock_active",
+                incoming_gesture=result.stable_gesture or result.raw_gesture or "-",
+                incoming_command=command_name or "-",
+                latched_terminal_command=self._latched_terminal_command or "-",
+                elapsed_ms=elapsed_ms,
+            )
+            if command_name == "emergency":
+                gesture_debug_log(
+                    "controller.terminal_emergency_override",
+                    incoming_gesture=result.stable_gesture or result.raw_gesture or "-",
+                    incoming_command=command_name,
+                    latched_terminal_command=self._latched_terminal_command or "-",
+                    elapsed_ms=elapsed_ms,
+                )
+                self._clear_terminal_latch(reason="emergency_override")
+            elif self._latched_terminal_command is not None:
+                self._queue_state = "terminal_latched"
+                gesture_debug_log(
+                    "controller.terminal_lock_blocked",
+                    incoming_gesture=result.stable_gesture or result.raw_gesture or "-",
+                    incoming_command=command_name or "-",
+                    latched_terminal_command=self._latched_terminal_command,
+                    elapsed_ms=elapsed_ms,
+                )
+                debug_state.update(
+                    {
+                        "resolved_command": command_name,
+                        "behavior_type": behavior_type,
+                        "dispatch_allowed": False,
+                        "block_reason": "terminal_locked",
+                        "inference_queue_state": result.queue_state,
+                        "controller_queue_state": self._queue_state,
+                        "last_active_gesture": self._last_active_gesture,
+                        "last_command_sent": self._last_command_sent,
+                        "active_repeatable_command": self._active_repeatable_command,
+                        "active_movement_command": self._active_movement_command,
+                        "active_movement_gesture": self._active_movement_gesture,
+                        "pending_movement_stop_reason": self._pending_movement_stop_reason,
+                        "latched_terminal_command": self._latched_terminal_command,
+                        "latched_terminal_gesture": self._latched_terminal_gesture,
+                        "terminal_lock_active": True,
+                    }
+                )
+                return GestureDispatchDecision(
+                    command_name=command_name,
+                    dispatch_allowed=False,
+                    block_reason="terminal_locked",
+                    debug_state=debug_state,
+                )
 
         if not self._enabled:
             self._queue_state = "gesture_off"
@@ -194,6 +248,7 @@ class GestureController:
                 "pending_movement_stop_reason": self._pending_movement_stop_reason,
                 "latched_terminal_command": self._latched_terminal_command,
                 "latched_terminal_gesture": self._latched_terminal_gesture,
+                "terminal_lock_active": self._terminal_lock_active(now),
             }
         )
 
@@ -415,6 +470,28 @@ class GestureController:
     ) -> tuple[bool, str, str]:
         elapsed_ms = (now - self._last_command_timestamp) * 1000.0
 
+        if self._terminal_lock_active(now) and self._latched_terminal_command is not None:
+            elapsed_lock_ms = int((now - self._latched_terminal_since) * 1000.0)
+            if behavior.command == "emergency":
+                gesture_debug_log(
+                    "controller.terminal_emergency_override",
+                    incoming_gesture=behavior.gesture,
+                    incoming_command=behavior.command,
+                    latched_terminal_command=self._latched_terminal_command,
+                    elapsed_ms=elapsed_lock_ms,
+                )
+                self._clear_terminal_latch(reason="emergency_override")
+            elif behavior.command != self._latched_terminal_command:
+                self._queue_state = "terminal_latched"
+                gesture_debug_log(
+                    "controller.terminal_lock_blocked",
+                    incoming_gesture=behavior.gesture,
+                    incoming_command=behavior.command,
+                    latched_terminal_command=self._latched_terminal_command,
+                    elapsed_ms=elapsed_lock_ms,
+                )
+                return False, "terminal_latched", "terminal_locked"
+
         if behavior.behavior_type == "safety":
             if self._last_dispatched_gesture == behavior.gesture and self._last_command_sent == behavior.command:
                 self._queue_state = "waiting_release"
@@ -528,25 +605,21 @@ class GestureController:
         released_gesture = self._armed_oneshot_gesture
         is_terminal = self._is_terminal_command(released_command)
 
-        # Keep terminal commands latched even if the hand disappears.
-        # This is the real fix for fist->land when the drone motion makes the hand leave frame.
-        if is_terminal and release_reason == "no_hand_timeout":
+        if is_terminal:
             gesture_debug_log(
                 "controller.terminal_release_ignored",
                 gesture=released_gesture,
                 command=released_command,
                 action="ignored",
-                reason="terminal_no_hand_timeout",
-                release_marker="-",
+                reason=release_reason,
+                release_marker=current_marker or "-",
             )
+            self._release_started_at = 0.0
             return
 
         self._armed_oneshot_command = None
         self._armed_oneshot_gesture = None
         self._release_started_at = 0.0
-
-        if self._terminal_release_required and self._latched_terminal_command == released_command:
-            self._clear_terminal_latch(reason=release_reason)
 
         if self._active_repeatable_command is not None and current_marker != self._last_active_gesture:
             self._active_repeatable_command = None
@@ -683,7 +756,7 @@ class GestureController:
                 action="ignored",
                 reason="already_latched",
             )
-            return False, "terminal_latched", "already_latched"
+            return False, "terminal_latched", "terminal_locked"
 
         if self._last_command_sent == behavior.command:
             elapsed_ms = (now - self._last_command_timestamp) * 1000.0
@@ -709,3 +782,24 @@ class GestureController:
         self._latched_terminal_command = None
         self._latched_terminal_gesture = None
         self._latched_terminal_since = 0.0
+
+    def _terminal_lock_active(self, now: float) -> bool:
+        if self._latched_terminal_command is None or self._latched_terminal_since <= 0.0:
+            return False
+        elapsed_ms = (now - self._latched_terminal_since) * 1000.0
+        return elapsed_ms < self._terminal_command_cooldown_ms
+
+    def _expire_terminal_latch_if_needed(self, now: float) -> None:
+        if self._latched_terminal_command is None:
+            return
+        if self._terminal_lock_active(now):
+            return
+        elapsed_ms = int((now - self._latched_terminal_since) * 1000.0)
+        gesture_debug_log(
+            "controller.terminal_lock_expired",
+            latched_terminal_command=self._latched_terminal_command,
+            incoming_gesture=self._last_stable_gesture_name or self._raw_gesture or "-",
+            incoming_command=self._pending_command or "-",
+            elapsed_ms=elapsed_ms,
+        )
+        self._clear_terminal_latch(reason="terminal_timeout")
