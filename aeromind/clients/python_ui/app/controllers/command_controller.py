@@ -59,7 +59,8 @@ class CommandController:
         return self.send_named_command(command_name)
 
     def build_gesture_movement_state(self, command_name: str) -> RcState | None:
-        speed = max(0, min(100, int(self.config.gesture_movement_rc_speed)))
+        # Gesture motion RC shaping is controlled by AppConfig.gesture_motion.
+        speed = max(0, min(100, int(self.config.gesture_rc_speed_for_command(command_name))))
         if command_name in {"stop", "hover"}:
             return RcState()
         if command_name == "forward":

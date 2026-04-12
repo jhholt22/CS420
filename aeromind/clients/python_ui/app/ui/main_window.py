@@ -80,10 +80,7 @@ class MainWindow(QMainWindow):
         self.config = AppConfig()
         self.app_controller = AppController(self.config)
         self.app_state = AppState()
-        self.gesture_inference_service = GestureInferenceService(
-            debug_bypass_stability=self.config.debug_bypass_stability,
-            debug_bypass_min_confidence=self.config.debug_bypass_min_confidence,
-        )
+        self.gesture_inference_service = GestureInferenceService(config=self.config)
         self.gesture_logger = GestureLogger(flush_every_rows=self.config.gesture_log_flush_rows)
         self.gesture_logger.set_session_context(
             participant_id="P001",

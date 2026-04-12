@@ -231,7 +231,7 @@ class StartupSmokeCheckService:
 def run_startup_smoke_check(config: AppConfig | None = None) -> StartupSummary:
     cfg = config or AppConfig()
     api_client = ApiClient(cfg.api_base_url)
-    gesture_service = GestureInferenceService()
+    gesture_service = GestureInferenceService(config=cfg)
     video_service = VideoStreamService(
         cfg.drone_video_source(),
         prefer_ffmpeg=cfg.video_backend_prefer_ffmpeg,

@@ -15,10 +15,4 @@ class AppController:
         self.api_client = api_client or ApiClient(self.config.api_base_url)
         self.command_controller = CommandController(self.api_client, self.config)
         self.rc_controller = RcController(self.api_client)
-        self.gesture_controller = GestureController(
-            one_shot_stabilization_ms=self.config.gesture_one_shot_stabilization_ms,
-            movement_stabilization_ms=self.config.gesture_movement_stabilization_ms,
-            movement_resend_interval_ms=self.config.gesture_movement_resend_interval_ms,
-            movement_cooldown_ms=self.config.gesture_movement_cooldown_ms,
-            movement_fast_path_confidence=self.config.gesture_movement_fast_path_confidence,
-        )
+        self.gesture_controller = GestureController(config=self.config)

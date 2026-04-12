@@ -7,6 +7,7 @@ import sys
 from typing import Any, Deque, Literal
 
 import cv2
+from app.config import AppConfig
 from app.models.gesture_behavior import GESTURE_BEHAVIOR_CONFIG, get_gesture_behavior
 from app.utils.logging_utils import gesture_debug_log
 
@@ -64,41 +65,38 @@ class GestureInferenceResult:
 
 class GestureInferenceService:
     _NOISE_MARKER = "__noise__"
-    _DEFAULT_MIN_CONFIDENCE = 0.60
     _GESTURE_COMMAND_MAP = {
         gesture_name: behavior.command for gesture_name, behavior in GESTURE_BEHAVIOR_CONFIG.items()
     }
     _INIT_LOGGED = False
 
-    def __init__(
-        self,
-        stability_frames: int = 3,
-        dominance_frames: int = 2,
-        min_confidence: float = 0.60,
-        noise_confidence_floor: float = 0.50,
-        max_num_hands: int = 1,
-        debug_bypass_stability: bool = False,
-        debug_bypass_min_confidence: float = 0.55,
-    ) -> None:
-        self.stability_frames = max(1, int(stability_frames))
-        self.dominance_frames = max(1, min(self.stability_frames, int(dominance_frames)))
-        self.min_confidence = max(0.0, min(1.0, float(min_confidence)))
-        self.noise_confidence_floor = max(0.0, min(1.0, float(noise_confidence_floor)))
-        self.max_num_hands = max(1, int(max_num_hands))
-        self.debug_bypass_stability = bool(debug_bypass_stability)
-        self.debug_bypass_min_confidence = max(0.0, min(1.0, float(debug_bypass_min_confidence)))
+    def __init__(self, config: AppConfig | None = None) -> None:
+        self._config = config or AppConfig()
+        # AppConfig.gesture_stability controls history length and gesture dominance.
+        self.stability_frames = max(1, int(self._config.gesture_stability.stability_frames))
+        self.dominance_frames = max(
+            1,
+            min(self.stability_frames, int(self._config.gesture_stability.dominance_frames)),
+        )
+        # AppConfig.gesture_thresholds controls confidence gating before commands are exposed.
+        self.min_confidence = max(0.0, min(1.0, float(self._config.gesture_thresholds.default_min_confidence)))
+        self.noise_confidence_floor = max(
+            0.0,
+            min(1.0, float(self._config.gesture_thresholds.noise_confidence_floor)),
+        )
+        # AppConfig.gesture_inference controls detector throughput and debug bypass behavior.
+        self.max_num_hands = max(1, int(self._config.gesture_inference.max_num_hands))
+        self.debug_bypass_stability = bool(self._config.gesture_inference.debug_bypass_stability)
+        self.debug_bypass_min_confidence = max(
+            0.0,
+            min(1.0, float(self._config.gesture_inference.debug_bypass_min_confidence)),
+        )
         self._history: Deque[str | None] = deque(maxlen=self.stability_frames)
         self._gesture_command_map = dict(self._GESTURE_COMMAND_MAP)
         self._enabled_gesture_commands = set(self._gesture_command_map.keys())
-        self._gesture_safety_rules = {
-            "open_palm": {"min_confidence": 0.78, "required_hits": self.dominance_frames},
-            "point_down": {"min_confidence": 0.76, "required_hits": self.dominance_frames},
-            "fist": {"min_confidence": 0.72, "required_hits": 2},
-            "thumbs_up": {"min_confidence": 0.72, "required_hits": 2},
-            "point_up": {"min_confidence": 0.76, "required_hits": self.dominance_frames},
-        }
-        self._fast_path_confidence = 0.88
         self._fast_path_hits = 2
+        self._max_reliable_distance_m = float(self._config.gesture_environment.max_reliable_distance_m)
+        self._distance_compensation_enabled = bool(self._config.gesture_environment.distance_compensation_enabled)
         self._detector: Any | None = None
         self._detector_available = False
         self._detector_status: DetectorStatus = "detector_unavailable"
@@ -116,6 +114,8 @@ class GestureInferenceService:
                 initialize_called=True,
                 debug_bypass_stability=self.debug_bypass_stability,
                 debug_bypass_min_confidence=self.debug_bypass_min_confidence,
+                max_reliable_distance_m=self._max_reliable_distance_m,
+                distance_compensation_enabled=self._distance_compensation_enabled,
             )
             self.__class__._INIT_LOGGED = True
 
@@ -615,11 +615,8 @@ class GestureInferenceService:
         if not command_name:
             return None, "stabilizing", self.dominance_frames, self.min_confidence
 
-        safety_rule = self._gesture_safety_rules.get(stable_gesture, {})
-        default_hits = self.dominance_frames
-        default_confidence = self.min_confidence + (0.08 if behavior.behavior_type == "one_shot" else 0.04)
-        min_confidence = float(safety_rule.get("min_confidence", default_confidence))
-        required_hits = int(safety_rule.get("required_hits", default_hits))
+        required_hits = self.dominance_frames
+        min_confidence = self._config.gesture_min_confidence(stable_gesture)
 
         if confidence is None:
             return None, "low_confidence", required_hits, min_confidence
@@ -629,7 +626,11 @@ class GestureInferenceService:
             return None, "low_confidence", required_hits, min_confidence
         if behavior.behavior_type == "safety":
             return command_name, "ready", 1, min_confidence
-        if confidence >= self._fast_path_confidence and stable_hits >= self._fast_path_hits:
+        if (
+            behavior.behavior_type == "repeatable"
+            and confidence >= self._config.gesture_fast_path_confidence(stable_gesture)
+            and stable_hits >= self._fast_path_hits
+        ):
             return command_name, "ready", self._fast_path_hits, min_confidence
         if stable_hits < required_hits:
             return None, "stabilizing", required_hits, min_confidence
@@ -644,26 +645,6 @@ class GestureInferenceService:
             return None
         behavior = get_gesture_behavior(raw_gesture)
         return behavior.command if behavior is not None else None
-
-    @classmethod
-    def get_threshold_for_gesture(cls, stable_gesture: str | None) -> float:
-        if not stable_gesture:
-            return cls._DEFAULT_MIN_CONFIDENCE
-
-        safety_rule = {
-            "open_palm": {"min_confidence": 0.78},
-            "point_down": {"min_confidence": 0.76},
-            "fist": {"min_confidence": 0.72},
-            "thumbs_up": {"min_confidence": 0.72},
-            "point_up": {"min_confidence": 0.76},
-        }.get(stable_gesture, {})
-        behavior = get_gesture_behavior(stable_gesture)
-        default_confidence = cls._DEFAULT_MIN_CONFIDENCE
-        if behavior is not None and behavior.behavior_type == "one_shot":
-            default_confidence += 0.08
-        elif behavior is not None:
-            default_confidence += 0.04
-        return float(safety_rule.get("min_confidence", default_confidence))
 
     def _stabilize_gesture(self, with_count: bool = False) -> str | tuple[str | None, int] | None:
         if len(self._history) < self.dominance_frames:
