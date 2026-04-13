@@ -5,7 +5,7 @@ from time import monotonic
 
 from app.config import AppConfig
 from app.gestures.registry import GestureDefinition, get_gesture_definition
-from app.services.gesture_inference_service import GestureInferenceResult
+from app.gestures.types import GestureInferenceResult
 from app.utils.logging_utils import gesture_debug_log
 
 
@@ -92,7 +92,8 @@ class GestureController:
         self._raw_gesture = result.raw_gesture or "-"
         self._stable_gesture = result.stable_gesture or "-"
         self._confidence = result.confidence
-        self._pending_command = result.command_name
+        stable_behavior = get_gesture_definition(result.stable_gesture)
+        self._pending_command = stable_behavior.command if stable_behavior is not None else None
         self._queue_state = result.queue_state or "idle"
         self._detector_available = result.detector_available
         self._detector_status = result.detector_status
@@ -119,15 +120,12 @@ class GestureController:
         debug_state = dict(self.update_from_result(result))
         behavior = get_gesture_definition(result.stable_gesture)
 
-        if behavior is None and result.command_name and (result.raw_gesture or "").strip().lower() == "open_palm":
-            behavior = get_gesture_definition(result.raw_gesture)
-
         if behavior is None and self._stability_gesture_name:
             committed_behavior = get_gesture_definition(self._stability_gesture_name)
             if committed_behavior is not None and committed_behavior.behavior_type == "repeatable":
                 behavior = committed_behavior
 
-        command_name = behavior.command if behavior is not None else result.command_name
+        command_name = behavior.command if behavior is not None else None
         behavior_type = behavior.behavior_type if behavior is not None else None
         now = monotonic()
         stable_ms = self.get_stable_ms()

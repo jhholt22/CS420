@@ -27,7 +27,7 @@ PERFORMANCE_LOG_INTERVAL_MS = 5000
 @dataclass(slots=True)
 class GestureThresholdConfig:
     # Gesture confidence gates for inference readiness live here.
-    default_min_confidence: float = 0.65
+    default_min_confidence: float = 0.50
     noise_confidence_floor: float = 0.50
 
     def min_confidence_for_gesture(self, gesture_name: str | None) -> float:
@@ -90,10 +90,21 @@ class GestureMotionConfig:
 
 
 @dataclass(slots=True)
+class GestureDirectionConfig:
+    # Point-up tilt direction anti-jitter controls live here.
+    tilt_neutral_dead_zone: float = 0.04
+    tilt_enter_threshold: float = 0.09
+    tilt_exit_threshold: float = 0.06
+    direction_min_hold_ms: int = 120
+    direction_stabilization_hits: int = 1
+    tilt_smoothing_alpha: float = 0.55
+
+
+@dataclass(slots=True)
 class GestureTerminalConfig:
     # Terminal one-shot latching and duplicate suppression live here.
     terminal_command_latch_enabled: bool = True
-    terminal_command_cooldown_ms: int = 4000
+    terminal_command_cooldown_ms: int = 1200
 
     # Critical fix:
     # terminal commands should not require the hand to remain visible
@@ -140,6 +151,7 @@ class AppConfig:
     gesture_thresholds: GestureThresholdConfig = field(default_factory=GestureThresholdConfig)
     gesture_stability: GestureStabilityConfig = field(default_factory=GestureStabilityConfig)
     gesture_motion: GestureMotionConfig = field(default_factory=GestureMotionConfig)
+    gesture_direction: GestureDirectionConfig = field(default_factory=GestureDirectionConfig)
     gesture_terminal: GestureTerminalConfig = field(default_factory=GestureTerminalConfig)
     gesture_environment: GestureEnvironmentConfig = field(default_factory=GestureEnvironmentConfig)
     gesture_inference: GestureInferenceConfig = field(default_factory=GestureInferenceConfig)
@@ -173,6 +185,30 @@ class AppConfig:
 
     def gesture_rc_speed_for_command(self, command_name: str) -> int:
         return self.gesture_motion.rc_speed_for_command(command_name)
+
+    @property
+    def gesture_tilt_neutral_dead_zone(self) -> float:
+        return float(self.gesture_direction.tilt_neutral_dead_zone)
+
+    @property
+    def gesture_tilt_enter_threshold(self) -> float:
+        return float(self.gesture_direction.tilt_enter_threshold)
+
+    @property
+    def gesture_tilt_exit_threshold(self) -> float:
+        return float(self.gesture_direction.tilt_exit_threshold)
+
+    @property
+    def gesture_direction_min_hold_ms(self) -> int:
+        return int(self.gesture_direction.direction_min_hold_ms)
+
+    @property
+    def gesture_direction_stabilization_hits(self) -> int:
+        return int(self.gesture_direction.direction_stabilization_hits)
+
+    @property
+    def gesture_tilt_smoothing_alpha(self) -> float:
+        return float(self.gesture_direction.tilt_smoothing_alpha)
 
     @property
     def gesture_idle_hover_ms(self) -> int:

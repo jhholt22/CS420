@@ -9,7 +9,8 @@ from typing import Any
 import cv2
 from PySide6.QtCore import QObject, Signal
 
-from app.services.gesture_inference_service import GestureInferenceResult, GestureInferenceService
+from app.gestures.types import GestureInferenceResult
+from app.services.gesture_inference_service import GestureInferenceService
 from app.utils.logging_utils import gesture_debug_log
 
 
