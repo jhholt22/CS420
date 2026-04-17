@@ -226,8 +226,8 @@ This project explores:
 
 ## 👨‍💻 Author
 
-Sayed Jihad Al Sayed
-
+ Jihad Al Sayed
+Jesse holt
 ---
 
 ## 🧠 Final Note
