@@ -504,8 +504,8 @@ class MainWindow(QMainWindow):
         self.gesture_debug_panel.detector_label.setText(
             f"Detector: {self._format_detector_status(detector_status, detector_available)}"
         )
-        self.gesture_debug_panel.raw_label.setText(f"Raw: {self._safe_debug_text(state.get('raw'))}")
-        self.gesture_debug_panel.stable_label.setText(f"Stable: {self._safe_debug_text(state.get('stable'))}")
+        stable_label = self._safe_debug_text(state.get("stable_label") or state.get("stable"))
+        self.gesture_debug_panel.stable_label.setText(f"Stable: {stable_label}")
 
         confidence = state.get("confidence")
         self.gesture_debug_panel.confidence_label.setText(
@@ -515,13 +515,12 @@ class MainWindow(QMainWindow):
             f"Last Command: {self._safe_debug_text(self.app_state.health.last_command_status)}"
         )
         queue_state = self._safe_queue_text(state.get("queue_state"))
-        current_label = self._safe_debug_text(self.gesture_logger.get_current_label())
         session_state = "ACTIVE" if self.gesture_logger.is_session_active() else "INACTIVE"
         participant_id = self.gesture_logger.get_session_context()["participant_id"]
         self.gesture_debug_panel.session_state_label.setText(
-            f"Session: {session_state} | Participant: {participant_id} | Label: {current_label}"
+            f"Session: {session_state} | Participant: {participant_id} | Gesture: {stable_label}"
         )
-        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state} | Label: {current_label}")
+        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state}")
         self.video_surface.set_gesture_hud_text(
             self._build_live_gesture_hud_text(state, detector_status=detector_status),
             visible=self.app_state.gesture_enabled,
@@ -574,8 +573,7 @@ class MainWindow(QMainWindow):
         confidence = state.get("confidence")
         confidence_text = f"{confidence:.2f}" if isinstance(confidence, float) else "--"
         resolved_command = self._safe_debug_text(state.get("resolved_command"))
-        raw_gesture = self._safe_debug_text(state.get("raw"))
-        stable_gesture = self._safe_debug_text(state.get("stable"))
+        stable_gesture = self._safe_debug_text(state.get("stable_label") or state.get("stable"))
         controller_queue_state = self._safe_queue_text(state.get("controller_queue_state") or state.get("queue_state"))
         latched_terminal = self._safe_debug_text(state.get("latched_terminal_command"))
         detector_text = self._format_detector_status(
@@ -585,7 +583,7 @@ class MainWindow(QMainWindow):
         safe_cap = "ON" if self.app_state.mode == "drone" and self.app_state.gesture_enabled else "OFF"
         return "\n".join(
             [
-                f"Raw {raw_gesture} | Stable {stable_gesture}",
+                f"Gesture {stable_gesture}",
                 f"Cmd {resolved_command} | Conf {confidence_text}",
                 f"Queue {controller_queue_state} | Detector {detector_text}",
                 f"Latch {latched_terminal} | Safe Cap {safe_cap}",

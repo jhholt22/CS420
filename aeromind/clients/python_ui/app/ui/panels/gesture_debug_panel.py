@@ -56,7 +56,7 @@ class GestureDebugPanel(QWidget):
         header_row.addWidget(self.details_button)
         layout.addLayout(header_row)
 
-        self.session_state_label = QLabel("Session: INACTIVE | Participant: P001 | Label: --", self)
+        self.session_state_label = QLabel("Session: INACTIVE | Participant: P001 | Gesture: --", self)
         self.session_state_label.setObjectName("gestureDebugValue")
         self.session_state_label.setWordWrap(True)
         layout.addWidget(self.session_state_label)
@@ -152,12 +152,10 @@ class GestureDebugPanel(QWidget):
         button_row.addWidget(self.clear_label_button)
         details_layout.addLayout(button_row)
 
-        self.raw_label = QLabel("Raw: --", self)
         self.stable_label = QLabel("Stable: --", self)
         self.confidence_label = QLabel("Confidence: --", self)
 
         for widget in (
-            self.raw_label,
             self.stable_label,
             self.confidence_label,
         ):
